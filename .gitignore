@@ -1,0 +1,10 @@
+bin/
+obj/
+*.user
+.vs/
+*.log
+build_output.txt
+OdooTool.AgentTests/bin/
+OdooTool.AgentTests/obj/
+OdooTool.Tests/bin/
+OdooTool.Tests/obj/

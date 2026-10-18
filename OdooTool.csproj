@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateDocumentationFile>True</GenerateDocumentationFile>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Configurations>Debug;Release;Test</Configurations>
+    <PackageId>Graphene.OdooTool</PackageId>
+    <Version>$([System.DateTime]::Now.ToString("1.yy.MM.dd"))</Version>
+    <Description>Odoo ERP control agent tool for AIOrchestrator: discover models and fields, search, create, update, delete records, call model methods, and read grouped aggregates over the Odoo JSON-2 external API.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
+    <PackageRequireLicenseAcceptance>False</PackageRequireLicenseAcceptance>
+    <Copyright>Andrea Bruno</Copyright>
+    <RepositoryUrl>https://github.com/Graphene-Lab/OdooTool</RepositoryUrl>
+    <PackageTags>agent;tool;odoo;erp;json2;crud;llm;automation</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="NuGetPackageId" Value="Graphene.OdooTool" />
+    <AssemblyMetadata Include="NuGetPackageVersion" Value="$(Version)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AIOrchestrator\AIOrchestrator.csproj" Condition="Exists('..\AIOrchestrator\AIOrchestrator.csproj')" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Graphene.AIOrchestrator" Version="1.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="LICENSE.md">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+    <None Update="README.md">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="OdooTool.Tests\**\*.cs" />
+    <Compile Remove="OdooTool.AgentTests\**\*.cs" />
+    <Compile Remove="OdooTool.Harness\**\*.cs" />
+  </ItemGroup>
+
+</Project>

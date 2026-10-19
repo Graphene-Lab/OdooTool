@@ -70,7 +70,12 @@ Log "Installing Odoo Python requirements in a virtualenv"
 python -m venv (Join-Path $InstallRoot 'venv')
 $py = Join-Path $InstallRoot 'venv\Scripts\python.exe'
 & $py -m pip install --upgrade pip
-& $py -m pip install -r (Join-Path $OdooDir 'requirements.txt')
+# python-ldap has no Windows wheel and needs OpenLDAP headers; LDAP auth is optional in
+# Odoo, so exclude it — otherwise pip fails on a plain Windows machine.
+$reqWin = Get-Content (Join-Path $OdooDir 'requirements.txt') |
+          Where-Object { $_ -notmatch '^\s*python-ldap' }
+$reqWin | Set-Content (Join-Path $InstallRoot 'requirements-win.txt') -Encoding ASCII
+& $py -m pip install -r (Join-Path $InstallRoot 'requirements-win.txt')
 
 Log "Creating the Odoo database with the base modules"
 # --db_host forces TCP password auth; the UNIX-socket shortcut does not exist on Windows.

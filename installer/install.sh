@@ -134,7 +134,13 @@ install_agentbridge() {
   # Direct download from the public release; no gh auth needed. The archive is ~1 GB,
   # so retry and resume a partial transfer instead of failing on a network blip.
   curl -fL --retry 5 --retry-delay 5 -C - "$url" -o "$AB_DIR/$asset"
-  tar -xzf "$AB_DIR/$asset" -C "$AB_DIR"
+  if ! tar -tzf "$AB_DIR/$asset" >/dev/null 2>&1; then
+    warn "AgentBridge archive is corrupt; downloading again from scratch"
+    rm -f "$AB_DIR/$asset"
+    curl -fL --retry 5 --retry-delay 5 "$url" -o "$AB_DIR/$asset"
+    tar -tzf "$AB_DIR/$asset" >/dev/null 2>&1 || die "AgentBridge archive could not be verified (download corrupt)"
+  fi
+  tar -xzf "$AB_DIR/$asset" -C "$AB_DIR" || die "AgentBridge extraction failed"
 }
 
 configure_agentbridge() {

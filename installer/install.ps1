@@ -56,6 +56,17 @@ if (-not $psql) {
     $psql = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
              Select-Object -First 1).FullName
 }
+# Python: use an installed 3.10-3.13 if present, otherwise install 3.12.
+$pyOk = $false
+if (Get-Command py -ErrorAction SilentlyContinue) {
+    foreach ($v in @('3.12','3.11','3.13','3.10')) {
+        & py "-$v" --version 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { $pyOk = $true; break }
+    }
+}
+if (-not $pyOk -and -not (Get-Command python -ErrorAction SilentlyContinue)) {
+    winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements
+}
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
             [System.Environment]::GetEnvironmentVariable('Path','User')
 
@@ -120,14 +131,28 @@ Log "Creating the Odoo database with the base modules"
     --addons-path="$OdooDir\addons" -i base --stop-after-init --without-demo
 
 # --- Admin credentials + API key ----------------------------------------
+# Reuse the API key from a previous install instead of creating a new one.
+$odooJsonPath = Join-Path $AbDir 'PersistentData\odoo.json'
+$existingKey = ''
+if (Test-Path $odooJsonPath) {
+    try { $existingKey = (Get-Content -Raw $odooJsonPath | ConvertFrom-Json).apiKey } catch {}
+}
+$OdooApiKey = $existingKey
+if ([string]::IsNullOrWhiteSpace($existingKey)) {
 Log "Creating the Odoo API key for the admin user"
 $env:ODOO_ADMIN_EMAIL = $AdminEmail
 $env:ODOO_ADMIN_PASS  = $AdminPass
 $keyScript = @'
 import os
 admin = env["res.users"].browse(2)
-email = os.environ["ODOO_ADMIN_EMAIL"]
-admin.write({"login": email, "email": email, "password": os.environ["ODOO_ADMIN_PASS"]})
+# Set the admin credentials only on the first install; on a re-run keep the existing ones.
+if admin.login == 'admin':
+    email = os.environ["ODOO_ADMIN_EMAIL"]
+    admin.write({"login": email, "email": email, "password": os.environ["ODOO_ADMIN_PASS"]})
+else:
+    found = env["res.users"].search([("login", "=", os.environ["ODOO_ADMIN_EMAIL"])], limit=1)
+    if found:
+        admin = found
 key = env["res.users.apikeys"].with_user(admin)._generate("rpc", "agentbridge", None)
 env.cr.commit()
 print(key or "")
@@ -149,10 +174,16 @@ if (Test-Path $outPath) { $OdooApiKey = (Get-Content -Raw $outPath).Trim() }
 if ([string]::IsNullOrWhiteSpace($OdooApiKey)) {
     Warn "Could not auto-create the API key. Create it in Odoo (Preferences -> Account Security -> New API Key) and set it in the AgentBridge config."
 }
+} else {
+    Log "Reusing the existing Odoo API key"
+}
 
 # --- AgentBridge + OdooTool plugin --------------------------------------
-Log "Downloading AgentBridge"
 New-Item -ItemType Directory -Force -Path $AbDir | Out-Null
+if (Test-Path (Join-Path $AbDir 'agent.exe')) {
+    Log "AgentBridge already installed; skipping download"
+} else {
+Log "Downloading AgentBridge"
 $asset = 'agentbridge-win-x64.tar.gz'
 if ($AbTag -eq 'latest') {
     $url = "https://github.com/$AbRepo/releases/latest/download/$asset"
@@ -192,16 +223,21 @@ if (-not $verified) { throw "AgentBridge archive could not be verified (download
 tar -xzf $pkg -C $AbDir
 if ($LASTEXITCODE -ne 0) { throw "AgentBridge extraction failed" }
 if (-not (Test-Path (Join-Path $AbDir 'agent.exe'))) { throw "AgentBridge binary missing after extraction" }
+}
 
 Log "Configuring AgentBridge with the LLM provider and the OdooTool plugin"
 $cfg = Join-Path $AbDir 'PersistentData'
 New-Item -ItemType Directory -Force -Path $cfg | Out-Null
+if (-not (Test-Path (Join-Path $cfg 'providers.json'))) {
 @"
 { "providers": [ { "name": "OdooStackLLM", "baseUrl": "$LlmUrl", "apiKey": "$LlmKey", "model": "$LlmModel" } ] }
 "@ | Set-Content -Path (Join-Path $cfg 'providers.json') -Encoding UTF8
+} else { Log "Keeping the existing providers.json" }
+if (-not (Test-Path (Join-Path $cfg 'plugins.json'))) {
 @"
 { "plugins": [ { "packageId": "$ToolPkg", "enabled": true } ] }
 "@ | Set-Content -Path (Join-Path $cfg 'plugins.json') -Encoding UTF8
+} else { Log "Keeping the existing plugins.json" }
 @"
 { "baseUrl": "http://localhost:$OdooPort", "apiKey": "$OdooApiKey", "database": "odoo_agent" }
 "@ | Set-Content -Path (Join-Path $cfg 'odoo.json') -Encoding UTF8

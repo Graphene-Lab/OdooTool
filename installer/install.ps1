@@ -11,7 +11,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 # --- Defaults (override with environment variables) ----------------------
 $OdooRepo   = if ($env:ODOO_REPO)   { $env:ODOO_REPO }   else { 'https://github.com/odoo/odoo.git' }
-$OdooBranch = if ($env:ODOO_BRANCH) { $env:ODOO_BRANCH } else { '18.0' }
+$OdooBranch = if ($env:ODOO_BRANCH) { $env:ODOO_BRANCH } else { '20.0' }
 $AbRepo     = if ($env:AB_REPO)     { $env:AB_REPO }     else { 'Graphene-Lab/AgentBridge' }
 $AbTag      = if ($env:AB_TAG)      { $env:AB_TAG }      else { 'latest' }
 $ToolPkg    = if ($env:TOOL_PKG)    { $env:TOOL_PKG }    else { 'Graphene.OdooTool' }
@@ -49,6 +49,19 @@ winget install -e --id Git.Git --accept-source-agreements --accept-package-agree
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
             [System.Environment]::GetEnvironmentVariable('Path','User')
 
+# --- PostgreSQL role ----------------------------------------------------
+Log "Configuring PostgreSQL user '$DbUser'"
+$pgPass = Ask "PostgreSQL 'postgres' superuser password (chosen during PostgreSQL install)" ""
+$psql = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
+         Select-Object -First 1).FullName
+if (-not $psql) {
+    Warn "psql not found. Create a PostgreSQL role named '$DbUser' (superuser, password '$DbPassword') manually."
+} else {
+    $env:PGPASSWORD = $pgPass
+    & $psql -U postgres -h 127.0.0.1 -c "CREATE ROLE $DbUser LOGIN SUPERUSER PASSWORD '$DbPassword';" 2>$null
+    Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+}
+
 # --- Odoo ---------------------------------------------------------------
 Log "Cloning Odoo Community ($OdooBranch)"
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
@@ -74,6 +87,7 @@ admin = env["res.users"].browse(2)
 email = os.environ["ODOO_ADMIN_EMAIL"]
 admin.write({"login": email, "email": email, "password": os.environ["ODOO_ADMIN_PASS"]})
 key = env["res.users.apikeys"].with_user(admin)._generate("rpc", "agentbridge", None)
+env.cr.commit()
 print(key or "")
 '@
 $keyScript | & $py (Join-Path $OdooDir 'odoo-bin') shell -d odoo_agent --db_host=127.0.0.1 `

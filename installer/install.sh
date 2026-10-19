@@ -128,8 +128,9 @@ install_agentbridge() {
   else
     url="https://github.com/$AB_REPO/releases/download/$AB_TAG/$asset"
   fi
-  # Direct download from the public release; no gh auth needed.
-  curl -fL "$url" -o "$AB_DIR/$asset"
+  # Direct download from the public release; no gh auth needed. The archive is ~1 GB,
+  # so retry and resume a partial transfer instead of failing on a network blip.
+  curl -fL --retry 5 --retry-delay 5 -C - "$url" -o "$AB_DIR/$asset"
   tar -xzf "$AB_DIR/$asset" -C "$AB_DIR"
 }
 

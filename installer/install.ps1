@@ -260,11 +260,17 @@ foreach ($lnk in @((Join-Path $desktop 'AI Odoo.lnk'), (Join-Path $startMenu 'AI
 
 Write-Host ''
 Log 'Done.'
+Write-Host "  HOW TO START:"
+Write-Host "    Double-click the 'AI Odoo' icon on the Desktop (or in the Start Menu)."
+Write-Host "    It starts Odoo, opens it in the browser and launches the assistant."
+Write-Host "    Then type a request such as 'list the customers'."
+Write-Host ''
 Write-Host "  Odoo URL:       http://localhost:$OdooPort"
 Write-Host "  Admin:          $AdminEmail / $AdminPass"
 Write-Host "  Install root:   $InstallRoot"
 Write-Host "  AgentBridge:    $AbDir"
 Write-Host "  Firewall:       TCP $OdooPort open"
 Write-Host ''
-Write-Host "  Start the assistant with:  $AbDir\agent.exe"
-Write-Host "  Tell it something like 'list the customers' and it uses OdooTool."
+Write-Host "  Manual start, if you ever need it:"
+Write-Host "    Odoo:      $py `"$OdooDir\odoo-bin`" -d odoo_agent --db_port $DbPort"
+Write-Host "    Assistant: $AbDir\agent.exe"

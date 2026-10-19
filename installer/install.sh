@@ -163,6 +163,37 @@ install_agentbridge() {
   tar -xzf "$AB_DIR/$asset" -C "$AB_DIR" || die "AgentBridge extraction failed"
 }
 
+install_plugin() {
+  log "Installing the OdooTool plugin into Tools/OdooTool"
+  local tools_dir="$AB_DIR/Tools/OdooTool"
+  mkdir -p "$tools_dir"
+  local ver
+  ver=$(curl -sf "https://api.nuget.org/v3-flatcontainer/graphene.odootool/index.json" \
+    | python3 -c "import sys,json;print(json.load(sys.stdin)['versions'][-1])" 2>/dev/null)
+  if [ -z "$ver" ]; then
+    warn "Could not resolve the Graphene.OdooTool version"
+    return 1
+  fi
+  local nupkg="/tmp/graphene.odootool.$ver.nupkg"
+  curl -sfL "https://api.nuget.org/v3-flatcontainer/graphene.odootool/$ver/graphene.odootool.$ver.nupkg" -o "$nupkg" \
+    || { warn "Could not download the OdooTool package"; return 1; }
+  python3 - "$nupkg" "$tools_dir" <<'PY' || { warn "Could not extract OdooTool.dll"; return 1; }
+import sys, zipfile, os
+nupkg, out = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(nupkg) as z:
+    names = [n for n in z.namelist() if n.startswith('lib/') and n.endswith('/OdooTool.dll')]
+    if not names:
+        sys.exit('OdooTool.dll not found in the package')
+    with z.open(names[0]) as src, open(os.path.join(out, 'OdooTool.dll'), 'wb') as dst:
+        dst.write(src.read())
+    xmls = [n for n in z.namelist() if n.startswith('lib/') and n.endswith('/OdooTool.xml')]
+    if xmls:
+        with z.open(xmls[0]) as src, open(os.path.join(out, 'OdooTool.xml'), 'wb') as dst:
+            dst.write(src.read())
+PY
+  log "OdooTool plugin installed (version $ver)"
+}
+
 configure_agentbridge() {
   log "Configuring AgentBridge with the LLM provider and the OdooTool plugin"
   local cfg="$AB_DIR/PersistentData"
@@ -181,15 +212,6 @@ configure_agentbridge() {
 }
 JSON
   else log "Keeping the existing providers.json"; fi
-  if [ ! -f "$cfg/plugins.json" ]; then
-  cat > "$cfg/plugins.json" <<JSON
-{
-  "plugins": [
-    { "packageId": "$TOOL_PKG", "enabled": true }
-  ]
-}
-JSON
-  else log "Keeping the existing plugins.json"; fi
   cat > "$cfg/odoo.json" <<JSON
 {
   "baseUrl": "http://localhost:$ODOO_PORT",
@@ -268,8 +290,13 @@ main() {
   create_database
   create_api_key
   install_agentbridge
+  install_plugin
   configure_agentbridge
   start_odoo
+  # Wait until Odoo answers, so "Done" is only printed for a working stack.
+  for i in $(seq 1 30); do curl -sf -o /dev/null "http://localhost:$ODOO_PORT/web/login" && break; sleep 2; done
+  curl -sf -o /dev/null "http://localhost:$ODOO_PORT/web/login" \
+    || warn "Odoo did not answer on port $ODOO_PORT after 60s; check $INSTALL_ROOT/odoo.log."
   open_firewall
   create_launcher
   echo

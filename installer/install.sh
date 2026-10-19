@@ -96,7 +96,7 @@ create_database() {
   "$INSTALL_ROOT/venv/bin/python" "$ODOO_DIR/odoo-bin" \
     -d odoo_agent --db_host=127.0.0.1 --db_port "$DB_PORT" --db_user "$DB_USER" --db_password "$DB_PASSWORD" \
     --addons-path="$ODOO_DIR/addons" \
-    -i base --stop-after-init --without-demo=all || true
+    -i base --stop-after-init --without-demo || true
 }
 
 create_api_key() {

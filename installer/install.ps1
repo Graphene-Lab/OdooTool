@@ -219,6 +219,45 @@ Start-Process -FilePath $py -ArgumentList @(
     "--addons-path=$OdooDir\addons", "--http-port=$OdooPort", '--http-interface=0.0.0.0'
 ) -RedirectStandardOutput (Join-Path $InstallRoot 'odoo.log') -WindowStyle Hidden
 
+# --- One-click launcher + shortcut -------------------------------------
+Log "Creating the one-click launcher and shortcuts"
+$launcherTemplate = @'
+$ErrorActionPreference = 'Continue'
+$root = $PSScriptRoot
+$py = Join-Path $root 'venv\Scripts\python.exe'
+$odoo = Join-Path $root 'odoo\odoo-bin'
+$ab = Join-Path $root 'agentbridge\agent.exe'
+$port = 8069
+$dbPort = __DB_PORT__
+function Test-Odoo { (Test-NetConnection -ComputerName 127.0.0.1 -Port $port -WarningAction SilentlyContinue).TcpTestSucceeded }
+if (-not (Test-Odoo)) {
+    Start-Process -FilePath $py -ArgumentList @(
+        $odoo, '-d', 'odoo_agent', '--db_host=127.0.0.1', "--db_port=$dbPort",
+        '--db_user', 'odoo', '--db_password', 'odoo',
+        ("--addons-path=" + (Join-Path $root 'odoo\addons')), "--http-port=$port", '--http-interface=0.0.0.0'
+    ) -WindowStyle Hidden -RedirectStandardOutput (Join-Path $root 'odoo.log')
+    for ($i = 0; $i -lt 40; $i++) { if (Test-Odoo) { break }; Start-Sleep -Seconds 2 }
+}
+Start-Process "http://localhost:$port"
+if (Test-Path $ab) { Start-Process -FilePath $ab -WorkingDirectory (Join-Path $root 'agentbridge') }
+'@
+$launcherPath = Join-Path $InstallRoot 'start.ps1'
+[System.IO.File]::WriteAllText($launcherPath, $launcherTemplate.Replace('__DB_PORT__', $DbPort), (New-Object System.Text.UTF8Encoding($false)))
+
+$ws = New-Object -ComObject WScript.Shell
+$desktop = [Environment]::GetFolderPath('Desktop')
+$startMenu = Join-Path ([Environment]::GetFolderPath('Programs')) 'AI Odoo'
+New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
+foreach ($lnk in @((Join-Path $desktop 'AI Odoo.lnk'), (Join-Path $startMenu 'AI Odoo.lnk'))) {
+    $sc = $ws.CreateShortcut($lnk)
+    $sc.TargetPath = Join-Path $PSHOME 'powershell.exe'
+    $sc.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launcherPath`""
+    $sc.WorkingDirectory = $InstallRoot
+    $sc.IconLocation = "$AbDir\agent.exe,0"
+    $sc.Description = 'AI Odoo - assistant and ERP'
+    $sc.Save()
+}
+
 Write-Host ''
 Log 'Done.'
 Write-Host "  Odoo URL:       http://localhost:$OdooPort"

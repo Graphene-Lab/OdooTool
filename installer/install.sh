@@ -250,13 +250,19 @@ main() {
   create_launcher
   echo
   log "Done."
+  echo "  HOW TO START:"
+  echo "    Double-click the 'AI Odoo' icon (Applications menu or Desktop)."
+  echo "    It starts Odoo, opens it in the browser and launches the assistant."
+  echo "    Then type a request such as 'list the customers'."
+  echo
   echo "  Odoo URL:       http://localhost:$ODOO_PORT"
   echo "  Admin:          $ADMIN_EMAIL / $ADMIN_PASS"
   echo "  Install root:   $INSTALL_ROOT"
   echo "  AgentBridge:    $AB_DIR"
   echo
-  echo "  Start the assistant with:  $AB_DIR/agent"
-  echo "  Tell it something like 'list the customers' and it uses OdooTool."
+  echo "  Manual start, if you ever need it:"
+  echo "    Odoo:      $INSTALL_ROOT/venv/bin/python $INSTALL_ROOT/odoo/odoo-bin -d odoo_agent --db_port $DB_PORT"
+  echo "    Assistant: $INSTALL_ROOT/agentbridge/agent"
 }
 
 main "$@"

@@ -1,11 +1,12 @@
 ﻿# OdooTool - one-shot installer for Windows.
 # Invoked by install.bat. Sets up a complete local stack:
-#   1. Asks for the company data and the AI provider.
-#   2. Installs PostgreSQL, Python and Git (via winget).
+#   1. Asks for the company data and the AI provider (environment variables win, so it can
+#      also run unattended).
+#   2. Installs PostgreSQL, Python and Git when missing.
 #   3. Installs Odoo Community and creates a database with the base modules.
 #   4. Downloads AgentBridge and installs the OdooTool plugin (activated by default).
 #   5. Configures OdooTool with the Odoo address and an API key.
-#   6. Starts Odoo and opens the AgentBridge assistant.
+#   6. Opens the firewall port, starts Odoo and leaves the assistant ready.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
@@ -20,45 +21,63 @@ $OdooDir    = Join-Path $InstallRoot 'odoo'
 $AbDir      = Join-Path $InstallRoot 'agentbridge'
 $DbUser     = if ($env:DB_USER)     { $env:DB_USER }     else { 'odoo' }
 $DbPassword = if ($env:DB_PASSWORD) { $env:DB_PASSWORD } else { 'odoo' }
+$DbPort     = if ($env:DB_PORT)     { $env:DB_PORT }     else { '5432' }
 $OdooPort   = if ($env:ODOO_PORT)   { $env:ODOO_PORT }   else { '8069' }
 
 function Log($m)  { Write-Host "`n==> $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "! $m" -ForegroundColor Yellow }
-function Ask($label,$def) {
+function Ask($label,$def,$envName) {
+    if ($envName -and -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($envName))) {
+        return [Environment]::GetEnvironmentVariable($envName)
+    }
     $r = Read-Host "$label [$def]"
     if ([string]::IsNullOrWhiteSpace($r)) { return $def } else { return $r }
 }
-function GenPassword { -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 20 | ForEach-Object {[char]$_}) }
+function GeneratePassword { -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 20 | ForEach-Object {[char]$_}) }
 
-# --- Wizard --------------------------------------------------------------
+# --- Wizard (environment variables make it unattended) ------------------
 Log "Questions"
-$Company    = Ask "Company name" "My Company"
-$AdminEmail = Ask "Odoo admin email" "admin@example.com"
-$AdminPass  = Ask "Odoo admin password" (GenPassword)
-$LlmUrl     = Ask "LLM provider base URL (OpenAI-compatible)" "http://192.168.43.253:8741/v1"
-$LlmKey     = Ask "LLM provider API key" ""
-$LlmModel   = Ask "LLM model name" "halogen-qwen3.8-flash-next"
+$Company    = Ask "Company name" "My Company" 'COMPANY_NAME'
+$AdminEmail = Ask "Odoo admin email" "admin@example.com" 'ADMIN_EMAIL'
+$AdminPass  = Ask "Odoo admin password" (GeneratePassword) 'ADMIN_PASS'
+$LlmUrl     = Ask "LLM provider base URL (OpenAI-compatible)" "http://192.168.43.253:8741/v1" 'LLM_BASE_URL'
+$LlmKey     = Ask "LLM provider API key" "" 'LLM_KEY'
+$LlmModel   = Ask "LLM model name" "halogen-qwen3.8-flash-next" 'LLM_MODEL'
 
-# --- Prerequisites -------------------------------------------------------
-Log "Installing PostgreSQL, Python and Git (via winget)"
-winget install -e --id PostgreSQL.PostgreSQL.16 --accept-source-agreements --accept-package-agreements
-winget install -e --id Python.Python.3.11 --accept-source-agreements --accept-package-agreements
-winget install -e --id Git.Git --accept-source-agreements --accept-package-agreements
-
-# winget puts the tools on PATH for NEW shells: refresh this process PATH.
+# --- Prerequisites (install only what is missing) -----------------------
+Log "Checking PostgreSQL, Python and Git"
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    winget install -e --id Git.Git --accept-source-agreements --accept-package-agreements
+}
+$psql = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
+         Select-Object -First 1).FullName
+if (-not $psql) {
+    winget install -e --id PostgreSQL.PostgreSQL.16 --accept-source-agreements --accept-package-agreements
+    $psql = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
+             Select-Object -First 1).FullName
+}
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
             [System.Environment]::GetEnvironmentVariable('Path','User')
 
 # --- PostgreSQL role ----------------------------------------------------
 Log "Configuring PostgreSQL user '$DbUser'"
-$pgPass = Ask "PostgreSQL 'postgres' superuser password (chosen during PostgreSQL install)" ""
-$psql = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
-         Select-Object -First 1).FullName
 if (-not $psql) {
     Warn "psql not found. Create a PostgreSQL role named '$DbUser' (superuser, password '$DbPassword') manually."
 } else {
-    $env:PGPASSWORD = $pgPass
-    & $psql -U postgres -h 127.0.0.1 -c "CREATE ROLE $DbUser LOGIN SUPERUSER PASSWORD '$DbPassword';" 2>$null
+    $env:PGPASSWORD = $DbPassword
+    $canConnect = & $psql -U $DbUser -h 127.0.0.1 -p $DbPort -d postgres -tAc "select 1" 2>$null
+    if ($canConnect -eq '1') {
+        Log "role '$DbUser' already works"
+    } else {
+        $pgPass = Ask "PostgreSQL 'postgres' superuser password" "" 'PG_SUPERPASS'
+        if ($pgPass) {
+            $env:PGPASSWORD = $pgPass
+            & $psql -U postgres -h 127.0.0.1 -p $DbPort -d postgres -c "CREATE ROLE $DbUser LOGIN SUPERUSER PASSWORD '$DbPassword';" 2>$null
+            if ($LASTEXITCODE -ne 0) { Warn "Could not create the role '$DbUser'; continuing if it already exists." }
+        } else {
+            Warn "No superuser password given: create the role '$DbUser' manually if the next step fails."
+        }
+    }
     Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
 }
 
@@ -66,9 +85,27 @@ if (-not $psql) {
 Log "Cloning Odoo Community ($OdooBranch)"
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
 if (-not (Test-Path $OdooDir)) { git clone --depth 1 --branch $OdooBranch $OdooRepo $OdooDir }
+
 Log "Installing Odoo Python requirements in a virtualenv"
-python -m venv (Join-Path $InstallRoot 'venv')
-$py = Join-Path $InstallRoot 'venv\Scripts\python.exe'
+$venvDir = Join-Path $InstallRoot 'venv'
+$py = Join-Path $venvDir 'Scripts\python.exe'
+if (Test-Path $py) {
+    Log "reusing the existing virtualenv"
+} else {
+    if (Test-Path $venvDir) { Remove-Item -Recurse -Force $venvDir -ErrorAction SilentlyContinue }
+    $venvMade = $false
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        foreach ($v in @('3.12','3.11','3.13','3.10')) {
+            & py "-$v" --version 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                & py "-$v" -m venv $venvDir
+                if ($LASTEXITCODE -eq 0) { $venvMade = $true; Log "using Python $v"; break }
+            }
+        }
+    }
+    if (-not $venvMade) { python -m venv $venvDir }
+}
+$py = Join-Path $venvDir 'Scripts\python.exe'
 & $py -m pip install --upgrade pip
 # python-ldap has no Windows wheel and needs OpenLDAP headers; LDAP auth is optional in
 # Odoo, so exclude it — otherwise pip fails on a plain Windows machine.
@@ -79,7 +116,7 @@ $reqWin | Set-Content (Join-Path $InstallRoot 'requirements-win.txt') -Encoding 
 
 Log "Creating the Odoo database with the base modules"
 # --db_host forces TCP password auth; the UNIX-socket shortcut does not exist on Windows.
-& $py (Join-Path $OdooDir 'odoo-bin') -d odoo_agent --db_host=127.0.0.1 --db_user $DbUser --db_password $DbPassword `
+& $py (Join-Path $OdooDir 'odoo-bin') -d odoo_agent --db_host=127.0.0.1 --db_port $DbPort --db_user $DbUser --db_password $DbPassword `
     --addons-path="$OdooDir\addons" -i base --stop-after-init --without-demo=all
 
 # --- Admin credentials + API key ----------------------------------------
@@ -95,10 +132,20 @@ key = env["res.users.apikeys"].with_user(admin)._generate("rpc", "agentbridge", 
 env.cr.commit()
 print(key or "")
 '@
-$keyScript | & $py (Join-Path $OdooDir 'odoo-bin') shell -d odoo_agent --db_host=127.0.0.1 `
-    --db_user $DbUser --db_password $DbPassword --addons-path="$OdooDir\addons" --no-http |
-    Set-Content -Path (Join-Path $InstallRoot 'odoo_api_key.txt') -Encoding UTF8
-$OdooApiKey = (Get-Content -Raw (Join-Path $InstallRoot 'odoo_api_key.txt')).Trim()
+$scriptPath = Join-Path $InstallRoot 'make_key.py'
+[System.IO.File]::WriteAllText($scriptPath, $keyScript, (New-Object System.Text.UTF8Encoding($false)))
+$outPath = Join-Path $InstallRoot 'odoo_api_key.txt'
+$errPath = Join-Path $InstallRoot 'make_key.err'
+# Feed the script as a FILE and capture stdout as a FILE: piping through PowerShell 5.1
+# re-encodes the text in the console code page and corrupts the Python source.
+Start-Process -FilePath $py -ArgumentList @(
+    (Join-Path $OdooDir 'odoo-bin'), 'shell', '-d', 'odoo_agent',
+    '--db_host=127.0.0.1', '--db_port', $DbPort, '--db_user', $DbUser, '--db_password', $DbPassword,
+    "--addons-path=$OdooDir\addons", '--no-http'
+) -RedirectStandardInput $scriptPath -RedirectStandardOutput $outPath -RedirectStandardError $errPath `
+  -NoNewWindow -Wait
+$OdooApiKey = ''
+if (Test-Path $outPath) { $OdooApiKey = (Get-Content -Raw $outPath).Trim() }
 if ([string]::IsNullOrWhiteSpace($OdooApiKey)) {
     Warn "Could not auto-create the API key. Create it in Odoo (Preferences -> Account Security -> New API Key) and set it in the AgentBridge config."
 }
@@ -113,7 +160,23 @@ if ($AbTag -eq 'latest') {
     $url = "https://github.com/$AbRepo/releases/download/$AbTag/$asset"
 }
 $pkg = Join-Path $AbDir $asset
-Invoke-WebRequest -Uri $url -OutFile $pkg -UseBasicParsing
+# curl.exe (built into Windows 10+) resumes a partial transfer and retries transient
+# failures. BITS stalled here with no progress, so curl is the reliable path.
+$curl = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
+if ($curl) {
+    # Resume, never restart: on a flaky link the partial file is kept and -C - continues it.
+    $attempt = 0
+    while ($true) {
+        $attempt++
+        & $curl -fL --retry 5 --retry-delay 5 -C - --output $pkg $url
+        if ($LASTEXITCODE -eq 0) { break }
+        if ($attempt -ge 10) { throw "AgentBridge download failed after $attempt attempts" }
+        Warn "download interrupted; resuming (attempt $attempt)..."
+        Start-Sleep -Seconds 5
+    }
+} else {
+    Invoke-WebRequest -Uri $url -OutFile $pkg -UseBasicParsing -TimeoutSec 7200
+}
 tar -xzf $pkg -C $AbDir
 
 Log "Configuring AgentBridge with the LLM provider and the OdooTool plugin"
@@ -129,11 +192,17 @@ New-Item -ItemType Directory -Force -Path $cfg | Out-Null
 { "baseUrl": "http://localhost:$OdooPort", "apiKey": "$OdooApiKey", "database": "odoo_agent" }
 "@ | Set-Content -Path (Join-Path $cfg 'odoo.json') -Encoding UTF8
 
+# --- Firewall -----------------------------------------------------------
+Log "Opening TCP port $OdooPort in Windows Firewall"
+netsh advfirewall firewall delete rule name="Odoo $OdooPort" 2>$null | Out-Null
+netsh advfirewall firewall add rule name="Odoo $OdooPort" dir=in action=allow protocol=TCP localport=$OdooPort 2>$null | Out-Null
+if ($LASTEXITCODE -ne 0) { Warn "Could not add the firewall rule (run as Administrator)." }
+
 Log "Starting Odoo on port $OdooPort"
 Start-Process -FilePath $py -ArgumentList @(
     (Join-Path $OdooDir 'odoo-bin'), '-d', 'odoo_agent', '--db_host=127.0.0.1',
-    '--db_user', $DbUser, '--db_password', $DbPassword,
-    "--addons-path=$OdooDir\addons", "--http-port=$OdooPort"
+    '--db_port', $DbPort, '--db_user', $DbUser, '--db_password', $DbPassword,
+    "--addons-path=$OdooDir\addons", "--http-port=$OdooPort", '--http-interface=0.0.0.0'
 ) -RedirectStandardOutput (Join-Path $InstallRoot 'odoo.log') -WindowStyle Hidden
 
 Write-Host ''
@@ -142,6 +211,7 @@ Write-Host "  Odoo URL:       http://localhost:$OdooPort"
 Write-Host "  Admin:          $AdminEmail / $AdminPass"
 Write-Host "  Install root:   $InstallRoot"
 Write-Host "  AgentBridge:    $AbDir"
+Write-Host "  Firewall:       TCP $OdooPort open"
 Write-Host ''
 Write-Host "  Start the assistant with:  $AbDir\agent.exe"
 Write-Host "  Tell it something like 'list the customers' and it uses OdooTool."

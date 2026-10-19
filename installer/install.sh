@@ -176,8 +176,12 @@ open_firewall() {
   elif command -v firewall-cmd >/dev/null 2>&1; then
     firewall-cmd --add-port="${ODOO_PORT}/tcp" --permanent && firewall-cmd --reload \
       || warn "firewalld could not open the port"
+  elif command -v iptables >/dev/null 2>&1; then
+    iptables -C INPUT -p tcp --dport "$ODOO_PORT" -j ACCEPT 2>/dev/null \
+      || iptables -I INPUT -p tcp --dport "$ODOO_PORT" -j ACCEPT \
+      || warn "iptables could not open the port"
   else
-    warn "No ufw/firewalld found; open TCP $ODOO_PORT manually if remote access is needed."
+    warn "No firewall tool found; open TCP $ODOO_PORT manually if remote access is needed."
   fi
 }
 

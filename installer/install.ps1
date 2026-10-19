@@ -177,7 +177,21 @@ if ($curl) {
 } else {
     Invoke-WebRequest -Uri $url -OutFile $pkg -UseBasicParsing -TimeoutSec 7200
 }
+# Verify the archive before extracting: a truncated or resumed transfer is corrupt.
+$verified = $false
+for ($i = 0; $i -lt 2; $i++) {
+    & tar -tzf $pkg *> $null
+    if ($LASTEXITCODE -eq 0) { $verified = $true; break }
+    Warn "AgentBridge archive is corrupt; downloading again from scratch"
+    Remove-Item $pkg -Force -ErrorAction SilentlyContinue
+    if ($curl) { & $curl -fL --retry 5 --retry-delay 5 --output $pkg $url }
+    else { Invoke-WebRequest -Uri $url -OutFile $pkg -UseBasicParsing -TimeoutSec 7200 }
+    if ($LASTEXITCODE -ne 0) { break }
+}
+if (-not $verified) { throw "AgentBridge archive could not be verified (download corrupt)" }
 tar -xzf $pkg -C $AbDir
+if ($LASTEXITCODE -ne 0) { throw "AgentBridge extraction failed" }
+if (-not (Test-Path (Join-Path $AbDir 'agent.exe'))) { throw "AgentBridge binary missing after extraction" }
 
 Log "Configuring AgentBridge with the LLM provider and the OdooTool plugin"
 $cfg = Join-Path $AbDir 'PersistentData'

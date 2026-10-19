@@ -225,6 +225,29 @@ if ($LASTEXITCODE -ne 0) { throw "AgentBridge extraction failed" }
 if (-not (Test-Path (Join-Path $AbDir 'agent.exe'))) { throw "AgentBridge binary missing after extraction" }
 }
 
+# --- OdooTool plugin: AgentBridge loads plugins from Tools/ next to the exe ---
+Log "Installing the OdooTool plugin into Tools\OdooTool"
+$toolsDir = Join-Path $AbDir 'Tools\OdooTool'
+New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+try {
+    $idx = Invoke-RestMethod 'https://api.nuget.org/v3-flatcontainer/graphene.odootool/index.json' -TimeoutSec 30
+    $ver = @($idx.versions)[-1]
+    $nupkg = Join-Path $env:TEMP "graphene.odootool.$ver.nupkg"
+    Invoke-WebRequest "https://api.nuget.org/v3-flatcontainer/graphene.odootool/$ver/graphene.odootool.$ver.nupkg" `
+        -OutFile $nupkg -UseBasicParsing -TimeoutSec 60
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead($nupkg)
+    $entry = $zip.Entries | Where-Object { $_.FullName -like 'lib/*/OdooTool.dll' } | Select-Object -First 1
+    if (-not $entry) { throw "OdooTool.dll not found in the package" }
+    [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $toolsDir 'OdooTool.dll'), $true)
+    $xmlEntry = $zip.Entries | Where-Object { $_.FullName -like 'lib/*/OdooTool.xml' } | Select-Object -First 1
+    if ($xmlEntry) { [IO.Compression.ZipFileExtensions]::ExtractToFile($xmlEntry, (Join-Path $toolsDir 'OdooTool.xml'), $true) }
+    $zip.Dispose()
+    Log "OdooTool plugin installed (version $ver)"
+} catch {
+    Warn ("Could not install the OdooTool plugin: " + $_.Exception.Message)
+}
+
 Log "Configuring AgentBridge with the LLM provider and the OdooTool plugin"
 $cfg = Join-Path $AbDir 'PersistentData'
 New-Item -ItemType Directory -Force -Path $cfg | Out-Null
@@ -233,11 +256,6 @@ if (-not (Test-Path (Join-Path $cfg 'providers.json'))) {
 { "providers": [ { "name": "OdooStackLLM", "baseUrl": "$LlmUrl", "apiKey": "$LlmKey", "model": "$LlmModel" } ] }
 "@ | Set-Content -Path (Join-Path $cfg 'providers.json') -Encoding UTF8
 } else { Log "Keeping the existing providers.json" }
-if (-not (Test-Path (Join-Path $cfg 'plugins.json'))) {
-@"
-{ "plugins": [ { "packageId": "$ToolPkg", "enabled": true } ] }
-"@ | Set-Content -Path (Join-Path $cfg 'plugins.json') -Encoding UTF8
-} else { Log "Keeping the existing plugins.json" }
 @"
 { "baseUrl": "http://localhost:$OdooPort", "apiKey": "$OdooApiKey", "database": "odoo_agent" }
 "@ | Set-Content -Path (Join-Path $cfg 'odoo.json') -Encoding UTF8
@@ -254,6 +272,14 @@ Start-Process -FilePath $py -ArgumentList @(
     '--db_port', $DbPort, '--db_user', $DbUser, '--db_password', $DbPassword,
     "--addons-path=$OdooDir\addons", "--http-port=$OdooPort", '--http-interface=0.0.0.0'
 ) -RedirectStandardOutput (Join-Path $InstallRoot 'odoo.log') -WindowStyle Hidden
+
+# Wait until Odoo answers, so "Done" is only printed for a working stack.
+$up = $false
+for ($i = 0; $i -lt 30; $i++) {
+    try { if ((Invoke-WebRequest "http://localhost:$OdooPort/web/login" -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200) { $up = $true; break } } catch {}
+    Start-Sleep -Seconds 2
+}
+if (-not $up) { Warn "Odoo did not answer on port $OdooPort after 60s; check $InstallRoot\odoo.log." }
 
 # --- One-click launcher + shortcut -------------------------------------
 Log "Creating the one-click launcher and shortcuts"

@@ -16,7 +16,7 @@ set -euo pipefail
 
 # --- Defaults (override with environment variables) ------------------------
 ODOO_REPO="${ODOO_REPO:-https://github.com/odoo/odoo.git}"
-ODOO_BRANCH="${ODOO_BRANCH:-18.0}"
+ODOO_BRANCH="${ODOO_BRANCH:-20.0}"
 ODOO_MAJOR="${ODOO_MAJOR:-20}"
 AB_REPO="${AB_REPO:-Graphene-Lab/AgentBridge}"
 AB_TAG="${AB_TAG:-latest}"
@@ -108,6 +108,7 @@ admin = env["res.users"].browse(2)
 email = os.environ["ODOO_ADMIN_EMAIL"]
 admin.write({"login": email, "email": email, "password": os.environ["ODOO_ADMIN_PASS"]})
 key = env["res.users.apikeys"].with_user(admin)._generate("rpc", "agentbridge", None)
+env.cr.commit()
 print(key or "")
 PY
   ODOO_API_KEY="$(cat "$INSTALL_ROOT/odoo_api_key.txt" 2>/dev/null || true)"

@@ -26,6 +26,7 @@ ODOO_DIR="$INSTALL_ROOT/odoo"
 AB_DIR="$INSTALL_ROOT/agentbridge"
 DB_USER="${DB_USER:-odoo}"
 DB_PASSWORD="${DB_PASSWORD:-odoo}"
+DB_PORT="${DB_PORT:-5432}"
 ODOO_PORT="${ODOO_PORT:-8069}"
 ODOO_API_KEY="${ODOO_API_KEY:-}"
 
@@ -36,6 +37,8 @@ die()  { printf '\033[1;31mx %s\033[0m\n' "$*" >&2; exit 1; }
 # --- Wizard --------------------------------------------------------------
 ask() { # ask VAR "Prompt" "default"
   local var="$1" prompt="$2" def="${3:-}" reply=""
+  # Unattended: an environment variable of the same name wins (no prompt).
+  if [ -n "${!var:-}" ]; then return; fi
   read -r -p "$prompt [${def}]: " reply || true
   reply="${reply:-$def}"
   printf -v "$var" '%s' "$reply"
@@ -74,8 +77,8 @@ install_prereqs() {
 configure_postgres() {
   log "Configuring PostgreSQL user '$DB_USER'"
   sudo service postgresql start || sudo pg_ctlcluster 16 main start || true
-  sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" | grep -q 1 || \
-    sudo -u postgres psql -c "CREATE ROLE $DB_USER LOGIN SUPERUSER PASSWORD '$DB_PASSWORD';"
+  sudo -u postgres psql -p "$DB_PORT" -tc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" | grep -q 1 || \
+    sudo -u postgres psql -p "$DB_PORT" -c "CREATE ROLE $DB_USER LOGIN SUPERUSER PASSWORD '$DB_PASSWORD';"
 }
 
 install_odoo() {
@@ -91,7 +94,7 @@ install_odoo() {
 create_database() {
   log "Creating the Odoo database and installing the base modules"
   "$INSTALL_ROOT/venv/bin/python" "$ODOO_DIR/odoo-bin" \
-    -d odoo_agent --db_host=127.0.0.1 --db_user "$DB_USER" --db_password "$DB_PASSWORD" \
+    -d odoo_agent --db_host=127.0.0.1 --db_port "$DB_PORT" --db_user "$DB_USER" --db_password "$DB_PASSWORD" \
     --addons-path="$ODOO_DIR/addons" \
     -i base --stop-after-init --without-demo=all || true
 }
@@ -101,7 +104,7 @@ create_api_key() {
   # Use the Odoo shell to create the key once and save it. The value is shown only at creation.
   ODOO_ADMIN_EMAIL="$ADMIN_EMAIL" ODOO_ADMIN_PASS="$ADMIN_PASS" \
   "$INSTALL_ROOT/venv/bin/python" "$ODOO_DIR/odoo-bin" shell -d odoo_agent \
-    --db_host=127.0.0.1 --db_user "$DB_USER" --db_password "$DB_PASSWORD" \
+    --db_host=127.0.0.1 --db_port "$DB_PORT" --db_user "$DB_USER" --db_password "$DB_PASSWORD" \
     --addons-path="$ODOO_DIR/addons" --no-http <<'PY' > "$INSTALL_ROOT/odoo_api_key.txt" 2>/dev/null || true
 import os
 admin = env["res.users"].browse(2)
@@ -166,10 +169,22 @@ JSON
 JSON
 }
 
+open_firewall() {
+  log "Opening TCP port $ODOO_PORT in the firewall"
+  if command -v ufw >/dev/null 2>&1; then
+    ufw allow "${ODOO_PORT}/tcp" || warn "ufw could not open the port"
+  elif command -v firewall-cmd >/dev/null 2>&1; then
+    firewall-cmd --add-port="${ODOO_PORT}/tcp" --permanent && firewall-cmd --reload \
+      || warn "firewalld could not open the port"
+  else
+    warn "No ufw/firewalld found; open TCP $ODOO_PORT manually if remote access is needed."
+  fi
+}
+
 start_odoo() {
   log "Starting Odoo on port $ODOO_PORT"
   nohup "$INSTALL_ROOT/venv/bin/python" "$ODOO_DIR/odoo-bin" \
-    -d odoo_agent --db_host=127.0.0.1 --db_user "$DB_USER" --db_password "$DB_PASSWORD" \
+    -d odoo_agent --db_host=127.0.0.1 --db_port "$DB_PORT" --db_user "$DB_USER" --db_password "$DB_PASSWORD" \
     --addons-path="$ODOO_DIR/addons" --http-port="$ODOO_PORT" \
     > "$INSTALL_ROOT/odoo.log" 2>&1 &
   echo $! > "$INSTALL_ROOT/odoo.pid"
@@ -186,6 +201,7 @@ main() {
   install_agentbridge
   configure_agentbridge
   start_odoo
+  open_firewall
   echo
   log "Done."
   echo "  Odoo URL:       http://localhost:$ODOO_PORT"

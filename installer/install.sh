@@ -27,6 +27,7 @@ AB_DIR="$INSTALL_ROOT/agentbridge"
 DB_USER="${DB_USER:-odoo}"
 DB_PASSWORD="${DB_PASSWORD:-odoo}"
 ODOO_PORT="${ODOO_PORT:-8069}"
+ODOO_API_KEY="${ODOO_API_KEY:-}"
 
 log()  { printf '\n\033[1;32m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m! %s\033[0m\n' "$*"; }
@@ -55,10 +56,19 @@ run_wizard() {
 # --- Prerequisites -------------------------------------------------------
 install_prereqs() {
   log "Installing PostgreSQL and Python build dependencies"
-  sudo apt-get update -y
+  sudo apt-get update -y || warn "apt update reported an error, continuing"
+  # A pre-existing broken package (seen in WSL with linux-headers) makes apt return
+  # non-zero even when the packages we need are installed, so do not abort on it:
+  # verify the tools we actually require below instead.
   sudo apt-get install -y git python3 python3-pip python3-venv postgresql libpq-dev \
     build-essential libxml2-dev libxslt1-dev libldap2-dev libsasl2-dev \
-    libjpeg-dev zlib1g-dev wkhtmltopdf
+    libjpeg-dev zlib1g-dev wkhtmltopdf \
+    || warn "apt reported an error (often an unrelated broken package in WSL); checking the required tools."
+  local missing=0
+  for tool in python3 psql wkhtmltopdf gcc git; do
+    command -v "$tool" >/dev/null || { warn "required tool missing: $tool"; missing=1; }
+  done
+  [ "$missing" -eq 0 ] || die "One or more required tools are missing. Fix the system packages and re-run."
 }
 
 configure_postgres() {
@@ -81,7 +91,7 @@ install_odoo() {
 create_database() {
   log "Creating the Odoo database and installing the base modules"
   "$INSTALL_ROOT/venv/bin/python" "$ODOO_DIR/odoo-bin" \
-    -d odoo_agent --db_user "$DB_USER" --db_password "$DB_PASSWORD" \
+    -d odoo_agent --db_host=127.0.0.1 --db_user "$DB_USER" --db_password "$DB_PASSWORD" \
     --addons-path="$ODOO_DIR/addons" \
     -i base --stop-after-init --without-demo=all || true
 }
@@ -89,14 +99,16 @@ create_database() {
 create_api_key() {
   log "Creating an Odoo API key for the admin user"
   # Use the Odoo shell to create the key once and save it. The value is shown only at creation.
-  ODOO_ADMIN_EMAIL="$ADMIN_EMAIL" \
+  ODOO_ADMIN_EMAIL="$ADMIN_EMAIL" ODOO_ADMIN_PASS="$ADMIN_PASS" \
   "$INSTALL_ROOT/venv/bin/python" "$ODOO_DIR/odoo-bin" shell -d odoo_agent \
-    --db_user "$DB_USER" --db_password "$DB_PASSWORD" \
+    --db_host=127.0.0.1 --db_user "$DB_USER" --db_password "$DB_PASSWORD" \
     --addons-path="$ODOO_DIR/addons" --no-http <<'PY' > "$INSTALL_ROOT/odoo_api_key.txt" 2>/dev/null || true
-from odoo import env
-admin = env["res.users"].search([("login", "=", __import__("os").environ["ODOO_ADMIN_EMAIL"])], limit=1)
-key = env["res.users.apikeys"].with_user(admin).create({"name": "agentbridge"})
-print(key.key if hasattr(key, "key") else "")
+import os
+admin = env["res.users"].browse(2)
+email = os.environ["ODOO_ADMIN_EMAIL"]
+admin.write({"login": email, "email": email, "password": os.environ["ODOO_ADMIN_PASS"]})
+key = env["res.users.apikeys"].with_user(admin)._generate("rpc", "agentbridge", None)
+print(key or "")
 PY
   ODOO_API_KEY="$(cat "$INSTALL_ROOT/odoo_api_key.txt" 2>/dev/null || true)"
   if [ -z "$ODOO_API_KEY" ]; then
@@ -109,11 +121,15 @@ install_agentbridge() {
   log "Downloading AgentBridge"
   mkdir -p "$AB_DIR"
   local asset="agentbridge-linux-x64.tar.gz"
+  local url
   if [ "$AB_TAG" = "latest" ]; then
-    gh release download -R "$AB_REPO" --pattern "$asset" -O - | tar -xz -C "$AB_DIR"
+    url="https://github.com/$AB_REPO/releases/latest/download/$asset"
   else
-    gh release download "$AB_TAG" -R "$AB_REPO" --pattern "$asset" -O - | tar -xz -C "$AB_DIR"
+    url="https://github.com/$AB_REPO/releases/download/$AB_TAG/$asset"
   fi
+  # Direct download from the public release; no gh auth needed.
+  curl -fL "$url" -o "$AB_DIR/$asset"
+  tar -xzf "$AB_DIR/$asset" -C "$AB_DIR"
 }
 
 configure_agentbridge() {
@@ -151,7 +167,7 @@ JSON
 start_odoo() {
   log "Starting Odoo on port $ODOO_PORT"
   nohup "$INSTALL_ROOT/venv/bin/python" "$ODOO_DIR/odoo-bin" \
-    -d odoo_agent --db_user "$DB_USER" --db_password "$DB_PASSWORD" \
+    -d odoo_agent --db_host=127.0.0.1 --db_user "$DB_USER" --db_password "$DB_PASSWORD" \
     --addons-path="$ODOO_DIR/addons" --http-port="$ODOO_PORT" \
     > "$INSTALL_ROOT/odoo.log" 2>&1 &
   echo $! > "$INSTALL_ROOT/odoo.pid"
@@ -159,12 +175,12 @@ start_odoo() {
 
 main() {
   log "OdooTool installer ($INSTALL_ROOT)"
-  command -v gh >/dev/null || die "The GitHub CLI (gh) is required. Install it first."
   run_wizard
   install_prereqs
   configure_postgres
   install_odoo
   create_database
+  create_api_key
   install_agentbridge
   configure_agentbridge
   start_odoo

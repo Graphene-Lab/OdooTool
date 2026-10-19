@@ -117,7 +117,7 @@ $reqWin | Set-Content (Join-Path $InstallRoot 'requirements-win.txt') -Encoding 
 Log "Creating the Odoo database with the base modules"
 # --db_host forces TCP password auth; the UNIX-socket shortcut does not exist on Windows.
 & $py (Join-Path $OdooDir 'odoo-bin') -d odoo_agent --db_host=127.0.0.1 --db_port $DbPort --db_user $DbUser --db_password $DbPassword `
-    --addons-path="$OdooDir\addons" -i base --stop-after-init --without-demo=all
+    --addons-path="$OdooDir\addons" -i base --stop-after-init --without-demo
 
 # --- Admin credentials + API key ----------------------------------------
 Log "Creating the Odoo API key for the admin user"

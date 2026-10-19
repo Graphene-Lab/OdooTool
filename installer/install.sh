@@ -191,6 +191,41 @@ open_firewall() {
   fi
 }
 
+create_launcher() {
+  log "Creating the one-click launcher"
+  cat > "$INSTALL_ROOT/start.sh" <<'LAUNCHER'
+#!/bin/bash
+ROOT="__ROOT__"
+PORT=__ODOO_PORT__
+DBPORT=__DB_PORT__
+if ! curl -sf -o /dev/null "http://localhost:$PORT"; then
+  setsid "$ROOT/venv/bin/python" "$ROOT/odoo/odoo-bin" -d odoo_agent --db_host=127.0.0.1 --db_port "$DBPORT" \
+    --db_user odoo --db_password odoo --addons-path="$ROOT/odoo/addons" \
+    --http-port "$PORT" --http-interface=0.0.0.0 > "$ROOT/odoo.log" 2>&1 < /dev/null &
+  for i in $(seq 1 40); do curl -sf -o /dev/null "http://localhost:$PORT" && break; sleep 2; done
+fi
+xdg-open "http://localhost:$PORT" >/dev/null 2>&1 &
+if [ -x "$ROOT/agentbridge/agent" ]; then
+  x-terminal-emulator -e "$ROOT/agentbridge/agent" 2>/dev/null || "$ROOT/agentbridge/agent" &
+fi
+LAUNCHER
+  sed -i "s|__ROOT__|$INSTALL_ROOT|g; s|__ODOO_PORT__|$ODOO_PORT|g; s|__DB_PORT__|$DB_PORT|g" "$INSTALL_ROOT/start.sh"
+  chmod +x "$INSTALL_ROOT/start.sh"
+
+  mkdir -p "$HOME/.local/share/applications" "$HOME/Desktop"
+  cat > "$HOME/.local/share/applications/ai-odoo.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=AI Odoo
+Comment=Start Odoo and the AI assistant
+Exec=bash "$INSTALL_ROOT/start.sh"
+Terminal=false
+Categories=Office;
+DESKTOP
+  cp "$HOME/.local/share/applications/ai-odoo.desktop" "$HOME/Desktop/ai-odoo.desktop" 2>/dev/null || true
+  chmod +x "$HOME/Desktop/ai-odoo.desktop" 2>/dev/null || true
+}
+
 start_odoo() {
   log "Starting Odoo on port $ODOO_PORT"
   nohup "$INSTALL_ROOT/venv/bin/python" "$ODOO_DIR/odoo-bin" \
@@ -212,6 +247,7 @@ main() {
   configure_agentbridge
   start_odoo
   open_firewall
+  create_launcher
   echo
   log "Done."
   echo "  Odoo URL:       http://localhost:$ODOO_PORT"

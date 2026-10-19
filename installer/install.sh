@@ -100,6 +100,16 @@ create_database() {
 }
 
 create_api_key() {
+  # Reuse the API key from a previous install instead of creating a new one.
+  if [ -f "$AB_DIR/PersistentData/odoo.json" ]; then
+    local existing
+    existing="$(sed -n 's/.*"apiKey"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$AB_DIR/PersistentData/odoo.json" 2>/dev/null | head -1)"
+    if [ -n "$existing" ]; then
+      ODOO_API_KEY="$existing"
+      log "Reusing the existing Odoo API key"
+      return 0
+    fi
+  fi
   log "Creating an Odoo API key for the admin user"
   # Use the Odoo shell to create the key once and save it. The value is shown only at creation.
   ODOO_ADMIN_EMAIL="$ADMIN_EMAIL" ODOO_ADMIN_PASS="$ADMIN_PASS" \
@@ -108,8 +118,14 @@ create_api_key() {
     --addons-path="$ODOO_DIR/addons" --no-http <<'PY' > "$INSTALL_ROOT/odoo_api_key.txt" 2>/dev/null || true
 import os
 admin = env["res.users"].browse(2)
-email = os.environ["ODOO_ADMIN_EMAIL"]
-admin.write({"login": email, "email": email, "password": os.environ["ODOO_ADMIN_PASS"]})
+# Set the admin credentials only on the first install; on a re-run keep the existing ones.
+if admin.login == 'admin':
+    email = os.environ["ODOO_ADMIN_EMAIL"]
+    admin.write({"login": email, "email": email, "password": os.environ["ODOO_ADMIN_PASS"]})
+else:
+    found = env["res.users"].search([("login", "=", os.environ["ODOO_ADMIN_EMAIL"])], limit=1)
+    if found:
+        admin = found
 key = env["res.users.apikeys"].with_user(admin)._generate("rpc", "agentbridge", None)
 env.cr.commit()
 print(key or "")
@@ -122,6 +138,10 @@ PY
 
 # --- AgentBridge + OdooTool plugin --------------------------------------
 install_agentbridge() {
+  if [ -x "$AB_DIR/agent" ]; then
+    log "AgentBridge already installed; skipping download"
+    return 0
+  fi
   log "Downloading AgentBridge"
   mkdir -p "$AB_DIR"
   local asset="agentbridge-linux-x64.tar.gz"
@@ -147,6 +167,7 @@ configure_agentbridge() {
   log "Configuring AgentBridge with the LLM provider and the OdooTool plugin"
   local cfg="$AB_DIR/PersistentData"
   mkdir -p "$cfg"
+  if [ ! -f "$cfg/providers.json" ]; then
   cat > "$cfg/providers.json" <<JSON
 {
   "providers": [
@@ -159,6 +180,8 @@ configure_agentbridge() {
   ]
 }
 JSON
+  else log "Keeping the existing providers.json"; fi
+  if [ ! -f "$cfg/plugins.json" ]; then
   cat > "$cfg/plugins.json" <<JSON
 {
   "plugins": [
@@ -166,6 +189,7 @@ JSON
   ]
 }
 JSON
+  else log "Keeping the existing plugins.json"; fi
   cat > "$cfg/odoo.json" <<JSON
 {
   "baseUrl": "http://localhost:$ODOO_PORT",

@@ -2,9 +2,10 @@
 
 [![NuGet](https://img.shields.io/nuget/v/Graphene.OdooTool?logo=nuget&label=NuGet)](https://www.nuget.org/packages/Graphene.OdooTool)
 [![License](https://img.shields.io/github/license/Graphene-Lab/OdooTool?label=license)](https://github.com/Graphene-Lab/OdooTool/blob/main/LICENSE.md)
+[![Download](https://img.shields.io/github/v/release/Graphene-Lab/OdooTool?label=download&logo=github)](https://github.com/Graphene-Lab/OdooTool/releases/latest)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue)](#one-command-installer-whole-local-stack)
-[![Install on Linux](https://img.shields.io/badge/install-Linux-2ea44f?logo=linux&logoColor=white)](https://github.com/Graphene-Lab/OdooTool/blob/main/installer/install.sh)
-[![Install on Windows](https://img.shields.io/badge/install-Windows-0078d7?logo=windows&logoColor=white)](https://github.com/Graphene-Lab/OdooTool/blob/main/installer/install.ps1)
+[![Install on Linux](https://img.shields.io/badge/install-Linux-2ea44f?logo=linux&logoColor=white)](https://github.com/Graphene-Lab/OdooTool/releases/latest/download/install.sh)
+[![Install on Windows](https://img.shields.io/badge/install-Windows-0078d7?logo=windows&logoColor=white)](https://github.com/Graphene-Lab/OdooTool/releases/latest/download/install.bat)
 
 OdooTool is an agent tool for **AIOrchestrator**. It lets an LLM control an Odoo ERP through the
 Odoo JSON-2 external API. The agent can discover models and fields, search records, create, update

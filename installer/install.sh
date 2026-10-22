@@ -239,14 +239,21 @@ open_firewall() {
 
 create_launcher() {
   log "Creating the one-click launcher"
-  cat > "$INSTALL_ROOT/start.sh" <<'LAUNCHER'
+  # Header: written now, storing the real values as safe bash literals with printf %q, so a path
+  # or a password containing $ ` " | \ or spaces cannot corrupt or inject anything in the file.
+  cat > "$INSTALL_ROOT/start.sh" <<EOF
 #!/bin/bash
-ROOT="__ROOT__"
-PORT=__ODOO_PORT__
-DBPORT=__DB_PORT__
+ROOT=$(printf '%q' "$INSTALL_ROOT")
+PORT=$ODOO_PORT
+DBPORT=$DB_PORT
+DBUSER=$(printf '%q' "$DB_USER")
+DBPASS=$(printf '%q' "$DB_PASSWORD")
+EOF
+  # Body: kept literal; it only uses the variables defined just above.
+  cat >> "$INSTALL_ROOT/start.sh" <<'LAUNCHER'
 if ! curl -sf -o /dev/null "http://localhost:$PORT"; then
   setsid "$ROOT/venv/bin/python" "$ROOT/odoo/odoo-bin" -d odoo_agent --db_host=127.0.0.1 --db_port "$DBPORT" \
-    --db_user odoo --db_password odoo --addons-path="$ROOT/odoo/addons" \
+    --db_user "$DBUSER" --db_password "$DBPASS" --addons-path="$ROOT/odoo/addons" \
     --http-port "$PORT" --http-interface=0.0.0.0 > "$ROOT/odoo.log" 2>&1 < /dev/null &
   for i in $(seq 1 40); do curl -sf -o /dev/null "http://localhost:$PORT" && break; sleep 2; done
 fi
@@ -255,7 +262,6 @@ if [ -x "$ROOT/agentbridge/agent" ]; then
   x-terminal-emulator -e "$ROOT/agentbridge/agent" 2>/dev/null || "$ROOT/agentbridge/agent" &
 fi
 LAUNCHER
-  sed -i "s|__ROOT__|$INSTALL_ROOT|g; s|__ODOO_PORT__|$ODOO_PORT|g; s|__DB_PORT__|$DB_PORT|g" "$INSTALL_ROOT/start.sh"
   chmod +x "$INSTALL_ROOT/start.sh"
 
   mkdir -p "$HOME/.local/share/applications" "$HOME/Desktop"

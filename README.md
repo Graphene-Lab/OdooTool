@@ -98,9 +98,10 @@ the host.
 
 If you want the whole ecosystem ready on your own machine — **AgentBridge + OdooTool + Odoo** —
 use the installer in the `installer/` folder. It sets everything up in one run and asks a few
-simple questions (company name, admin email and password, and the AI provider to use). It
-installs PostgreSQL and Odoo, creates the database, downloads AgentBridge, and turns the OdooTool
-plugin on by default, so the assistant can drive Odoo right away.
+simple questions (company name, admin email and password, the PostgreSQL `postgres` superuser
+password when the `odoo` database role is not ready yet, and the AI provider to use). It installs
+PostgreSQL and Odoo, creates the database, downloads AgentBridge, and turns the OdooTool plugin on
+by default, so the assistant can drive Odoo right away.
 
 On Windows, double-click `install.bat` (or run `install.ps1` from PowerShell):
 
@@ -118,9 +119,21 @@ When it finishes, open the assistant and tell it something like "list the custom
 assistant uses OdooTool to read and change the data in Odoo. You can watch the result in the Odoo
 window at `http://localhost:8069`.
 
-The installer needs the GitHub CLI (`gh`) signed in, because it downloads the AgentBridge release.
-You can change what it installs with environment variables (for example `ODOO_BRANCH`, `AB_TAG`,
-`INSTALL_ROOT`). iOS is not supported: Odoo and AgentBridge do not run on iOS.
+The installer downloads the public AgentBridge release with `curl` (built into Windows 10+), so no
+GitHub sign-in is needed.
+
+The `odoo` database role is created for you. On Windows, if that role does not exist yet — or was
+created earlier with a different password — the installer asks once for the `postgres` superuser
+password, the one chosen when PostgreSQL was installed. On Linux and WSL it uses `sudo -u postgres`
+instead, so no password is asked there. Re-running the installer is safe either way: it continues
+where it stopped and reuses what is already there.
+
+For a fully unattended run, set these environment variables before starting:
+`COMPANY_NAME`, `ADMIN_EMAIL`, `ADMIN_PASS`, `LLM_BASE_URL`, `LLM_KEY`, `LLM_MODEL`,
+`DB_USER`, `DB_PASSWORD`, `DB_PORT`, `PG_SUPERUSER`, `PG_SUPERPASS` (Windows), `ODOO_REPO`,
+`ODOO_BRANCH`, `ODOO_MAJOR` (Linux), `ODOO_PORT`, `AB_REPO`, `AB_TAG`, `TOOL_PKG`, `INSTALL_ROOT`,
+and `ODOO_API_KEY` (Linux, to reuse an existing key).
+iOS is not supported: Odoo and AgentBridge do not run on iOS.
 
 ## License
 

@@ -22,6 +22,7 @@ $AbDir      = Join-Path $InstallRoot 'agentbridge'
 $DbUser     = if ($env:DB_USER)     { $env:DB_USER }     else { 'odoo' }
 $DbPassword = if ($env:DB_PASSWORD) { $env:DB_PASSWORD } else { 'odoo' }
 $DbPort     = if ($env:DB_PORT)     { $env:DB_PORT }     else { '5432' }
+$PgSuper    = if ($env:PG_SUPERUSER){ $env:PG_SUPERUSER } else { 'postgres' }
 $OdooPort   = if ($env:ODOO_PORT)   { $env:ODOO_PORT }   else { '8069' }
 
 function Log($m)  { Write-Host "`n==> $m" -ForegroundColor Green }
@@ -35,6 +36,36 @@ function Ask($label,$def,$envName) {
 }
 function GeneratePassword { -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 20 | ForEach-Object {[char]$_}) }
 
+# Builds a PowerShell single-quoted literal (any embedded quote is doubled), so the generated
+# launcher keeps the exact role name and password even when they contain $ ` " ' or spaces.
+function PsSingleQuote([string]$s) { if ([string]::IsNullOrEmpty($s)) { return "''" }; "'" + ($s -replace "'", "''") + "'" }
+
+# Runs a native program (winget, psql, curl, tar, pip, odoo-bin) without letting its stderr
+# kill the whole install. Windows PowerShell 5.1 raises a terminating NativeCommandError the
+# moment a native program writes anything to stderr while $ErrorActionPreference is 'Stop',
+# so the preference is dropped to 'Continue' here and success is decided by the exit code.
+function Invoke-Native {
+    param(
+        [Parameter(Mandatory = $true)][string]$Exe,
+        [string[]]$ArgList = @()
+    )
+    if (-not (Get-Command $Exe -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{ Code = -1; Text = "$Exe not found" }
+    }
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & $Exe @ArgList 2>&1 | Out-String
+        $code = $LASTEXITCODE
+        $clean = ('' + $out).Trim()
+        if ($clean.Length -gt 4000) { $clean = $clean.Substring($clean.Length - 4000) }
+        $res = [pscustomobject]@{ Code = $code; Text = $clean }
+    } finally {
+        $ErrorActionPreference = $saved
+    }
+    return $res
+}
+
 # --- Wizard (environment variables make it unattended) ------------------
 Log "Questions"
 $Company    = Ask "Company name" "My Company" 'COMPANY_NAME'
@@ -47,12 +78,14 @@ $LlmModel   = Ask "LLM model name" "halogen-qwen3.8-flash-next" 'LLM_MODEL'
 # --- Prerequisites (install only what is missing) -----------------------
 Log "Checking PostgreSQL, Python and Git"
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    winget install -e --id Git.Git --accept-source-agreements --accept-package-agreements
+    $r = Invoke-Native -Exe 'winget' -ArgList @('install', '-e', '--id', 'Git.Git', '--accept-source-agreements', '--accept-package-agreements')
+    if ($r.Code -ne 0) { Warn "winget could not install Git (exit $($r.Code)). Install Git yourself if it is missing." }
 }
 $psql = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
          Select-Object -First 1).FullName
 if (-not $psql) {
-    winget install -e --id PostgreSQL.PostgreSQL.16 --accept-source-agreements --accept-package-agreements
+    $r = Invoke-Native -Exe 'winget' -ArgList @('install', '-e', '--id', 'PostgreSQL.PostgreSQL.16', '--accept-source-agreements', '--accept-package-agreements')
+    if ($r.Code -ne 0) { Warn "winget could not install PostgreSQL (exit $($r.Code))." }
     $psql = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
              Select-Object -First 1).FullName
 }
@@ -60,12 +93,13 @@ if (-not $psql) {
 $pyOk = $false
 if (Get-Command py -ErrorAction SilentlyContinue) {
     foreach ($v in @('3.12','3.11','3.13','3.10')) {
-        & py "-$v" --version 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) { $pyOk = $true; break }
+        $p = Invoke-Native -Exe 'py' -ArgList @("-$v", '--version')
+        if ($p.Code -eq 0) { $pyOk = $true; break }
     }
 }
 if (-not $pyOk -and -not (Get-Command python -ErrorAction SilentlyContinue)) {
-    winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements
+    $r = Invoke-Native -Exe 'winget' -ArgList @('install', '-e', '--id', 'Python.Python.3.12', '--accept-source-agreements', '--accept-package-agreements')
+    if ($r.Code -ne 0) { Warn "winget could not install Python (exit $($r.Code))." }
 }
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
             [System.Environment]::GetEnvironmentVariable('Path','User')
@@ -75,18 +109,41 @@ Log "Configuring PostgreSQL user '$DbUser'"
 if (-not $psql) {
     Warn "psql not found. Create a PostgreSQL role named '$DbUser' (superuser, password '$DbPassword') manually."
 } else {
+    # Try the account the whole stack will use. On a fresh machine it does not exist yet, so a
+    # failing probe here is normal and must NOT stop the install: this exact line used to kill
+    # the whole script (NativeCommandError) before the question below could even be asked.
+    # psql exits 0 only when it really connected, so the exit code is the signal we trust.
     $env:PGPASSWORD = $DbPassword
-    $canConnect = & $psql -U $DbUser -h 127.0.0.1 -p $DbPort -d postgres -tAc "select 1" 2>$null
-    if ($canConnect -eq '1') {
+    $probe = Invoke-Native -Exe $psql -ArgList @('-U', $DbUser, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', 'select 1')
+    if ($probe.Code -eq 0) {
         Log "role '$DbUser' already works"
     } else {
-        $pgPass = Ask "PostgreSQL 'postgres' superuser password" "" 'PG_SUPERPASS'
-        if ($pgPass) {
-            $env:PGPASSWORD = $pgPass
-            & $psql -U postgres -h 127.0.0.1 -p $DbPort -d postgres -c "CREATE ROLE $DbUser LOGIN SUPERUSER PASSWORD '$DbPassword';" 2>$null
-            if ($LASTEXITCODE -ne 0) { Warn "Could not create the role '$DbUser'; continuing if it already exists." }
+        $pgPass = Ask "PostgreSQL '$PgSuper' superuser password" '' 'PG_SUPERPASS'
+        if ([string]::IsNullOrWhiteSpace($pgPass)) {
+            throw "The database role '$DbUser' is not ready and no '$PgSuper' password was given. Re-run and type the '$PgSuper' password (the one chosen when PostgreSQL was installed), or create the role yourself with: CREATE ROLE $DbUser LOGIN SUPERUSER PASSWORD '$DbPassword';"
+        }
+        # This one query tells us both things at once: whether the '$PgSuper' password works
+        # (exit code) and whether the role is already there (its answer).
+        $env:PGPASSWORD = $pgPass
+        $act = Invoke-Native -Exe $psql -ArgList @('-U', $PgSuper, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', "select 1 from pg_roles where rolname='$DbUser'")
+        if ($act.Code -ne 0) {
+            throw "Cannot connect to PostgreSQL as '$PgSuper' (exit $act.Code): $($act.Text). Type the correct '$PgSuper' password and run the installer again - it continues where it stopped."
+        }
+        # Create the role when it is missing, repair the password when it is already there with
+        # a different one. Both cases used to break the Odoo database step some minutes later.
+        if ($act.Text -eq '1') { $verb = 'ALTER' } else { $verb = 'CREATE' }
+        $done = Invoke-Native -Exe $psql -ArgList @('-U', $PgSuper, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-c', "$verb ROLE $DbUser LOGIN SUPERUSER PASSWORD '$DbPassword'")
+        if ($done.Code -ne 0) {
+            throw "Could not ${verb} the database role '$DbUser' (exit $done.Code): $($done.Text)"
+        }
+        # Verify with the credentials the rest of the stack actually uses, so a wrong password is
+        # reported here instead of minutes later, in the middle of the Odoo setup.
+        $env:PGPASSWORD = $DbPassword
+        $check = Invoke-Native -Exe $psql -ArgList @('-U', $DbUser, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', 'select 1')
+        if ($check.Code -eq 0) {
+            Log "role '$DbUser' ready"
         } else {
-            Warn "No superuser password given: create the role '$DbUser' manually if the next step fails."
+            throw "The role '$DbUser' still cannot connect to the database ($($check.Text)). Everything after this needs that role, so the install stops here. Check the password and run the installer again."
         }
     }
     Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
@@ -95,7 +152,10 @@ if (-not $psql) {
 # --- Odoo ---------------------------------------------------------------
 Log "Cloning Odoo Community ($OdooBranch)"
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
-if (-not (Test-Path $OdooDir)) { git clone --depth 1 --branch $OdooBranch $OdooRepo $OdooDir }
+if (-not (Test-Path $OdooDir)) {
+    $c = Invoke-Native -Exe 'git' -ArgList @('clone', '--depth', '1', '--branch', $OdooBranch, $OdooRepo, $OdooDir)
+    if ($c.Code -ne 0) { Warn "git clone finished with exit $($c.Code): $($c.Text)" }
+}
 
 Log "Installing Odoo Python requirements in a virtualenv"
 $venvDir = Join-Path $InstallRoot 'venv'
@@ -107,28 +167,38 @@ if (Test-Path $py) {
     $venvMade = $false
     if (Get-Command py -ErrorAction SilentlyContinue) {
         foreach ($v in @('3.12','3.11','3.13','3.10')) {
-            & py "-$v" --version 2>$null | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                & py "-$v" -m venv $venvDir
-                if ($LASTEXITCODE -eq 0) { $venvMade = $true; Log "using Python $v"; break }
-            }
+            $p = Invoke-Native -Exe 'py' -ArgList @("-$v", '-m', 'venv', $venvDir)
+            if ($p.Code -eq 0 -and (Test-Path $py)) { $venvMade = $true; Log "using Python $v"; break }
         }
     }
-    if (-not $venvMade) { python -m venv $venvDir }
+    if (-not $venvMade) {
+        $p = Invoke-Native -Exe 'python' -ArgList @('-m', 'venv', $venvDir)
+        if ($p.Code -ne 0) { Warn "Could not create the virtualenv (exit $($p.Code)): $($p.Text)" }
+    }
 }
 $py = Join-Path $venvDir 'Scripts\python.exe'
-& $py -m pip install --upgrade pip
+if (-not (Test-Path $py)) {
+    throw "No usable Python was found, so Odoo cannot be installed. Install Python 3.10, 3.11, 3.12 or 3.13 (check 'py' works in a command prompt) and run the installer again."
+}
+$up = Invoke-Native -Exe $py -ArgList @('-m', 'pip', 'install', '--upgrade', 'pip')
+if ($up.Code -ne 0) { Warn "pip upgrade finished with exit $($up.Code) (this is often only a warning)." }
 # python-ldap has no Windows wheel and needs OpenLDAP headers; LDAP auth is optional in
 # Odoo, so exclude it — otherwise pip fails on a plain Windows machine.
 $reqWin = Get-Content (Join-Path $OdooDir 'requirements.txt') |
           Where-Object { $_ -notmatch '^\s*python-ldap' }
 $reqWin | Set-Content (Join-Path $InstallRoot 'requirements-win.txt') -Encoding ASCII
-& $py -m pip install -r (Join-Path $InstallRoot 'requirements-win.txt')
+$rp = Invoke-Native -Exe $py -ArgList @('-m', 'pip', 'install', '-r', (Join-Path $InstallRoot 'requirements-win.txt'))
+if ($rp.Code -ne 0) { Warn "pip install finished with exit $($rp.Code); last messages: $($rp.Text)" }
 
 Log "Creating the Odoo database with the base modules"
 # --db_host forces TCP password auth; the UNIX-socket shortcut does not exist on Windows.
-& $py (Join-Path $OdooDir 'odoo-bin') -d odoo_agent --db_host=127.0.0.1 --db_port $DbPort --db_user $DbUser --db_password $DbPassword `
-    --addons-path="$OdooDir\addons" -i base --stop-after-init --without-demo
+$addons = Join-Path $OdooDir 'addons'
+$db = Invoke-Native -Exe $py -ArgList @(
+    (Join-Path $OdooDir 'odoo-bin'), '-d', 'odoo_agent', '--db_host=127.0.0.1',
+    '--db_port', $DbPort, '--db_user', $DbUser, '--db_password', $DbPassword,
+    "--addons-path=$addons", '-i', 'base', '--stop-after-init', '--without-demo')
+if ($db.Code -eq 0) { Log "database 'odoo_agent' created" }
+else { Warn "Odoo could not create the database (exit $($db.Code)). Last messages: $($db.Text)" }
 
 # --- Admin credentials + API key ----------------------------------------
 # Reuse the API key from a previous install instead of creating a new one.
@@ -199,9 +269,9 @@ if ($curl) {
     $attempt = 0
     while ($true) {
         $attempt++
-        & $curl -fL --retry 5 --retry-delay 5 -C - --output $pkg $url
-        if ($LASTEXITCODE -eq 0) { break }
-        if ($attempt -ge 10) { throw "AgentBridge download failed after $attempt attempts" }
+        $d = Invoke-Native -Exe $curl -ArgList @('-fL', '--retry', '5', '--retry-delay', '5', '-C', '-', '--output', $pkg, $url)
+        if ($d.Code -eq 0) { break }
+        if ($attempt -ge 10) { throw "AgentBridge download failed after $attempt attempts (exit $($d.Code)): $($d.Text)" }
         Warn "download interrupted; resuming (attempt $attempt)..."
         Start-Sleep -Seconds 5
     }
@@ -211,17 +281,17 @@ if ($curl) {
 # Verify the archive before extracting: a truncated or resumed transfer is corrupt.
 $verified = $false
 for ($i = 0; $i -lt 2; $i++) {
-    & tar -tzf $pkg *> $null
-    if ($LASTEXITCODE -eq 0) { $verified = $true; break }
+    $t = Invoke-Native -Exe 'tar' -ArgList @('-tzf', $pkg)
+    if ($t.Code -eq 0) { $verified = $true; break }
     Warn "AgentBridge archive is corrupt; downloading again from scratch"
     Remove-Item $pkg -Force -ErrorAction SilentlyContinue
-    if ($curl) { & $curl -fL --retry 5 --retry-delay 5 --output $pkg $url }
+    if ($curl) { $d2 = Invoke-Native -Exe $curl -ArgList @('-fL', '--retry', '5', '--retry-delay', '5', '--output', $pkg, $url) }
     else { Invoke-WebRequest -Uri $url -OutFile $pkg -UseBasicParsing -TimeoutSec 7200 }
-    if ($LASTEXITCODE -ne 0) { break }
+    if ($curl -and $d2.Code -ne 0) { break }
 }
 if (-not $verified) { throw "AgentBridge archive could not be verified (download corrupt)" }
-tar -xzf $pkg -C $AbDir
-if ($LASTEXITCODE -ne 0) { throw "AgentBridge extraction failed" }
+$t = Invoke-Native -Exe 'tar' -ArgList @('-xzf', $pkg, '-C', $AbDir)
+if ($t.Code -ne 0) { throw "AgentBridge extraction failed (exit $($t.Code)): $($t.Text)" }
 if (-not (Test-Path (Join-Path $AbDir 'agent.exe'))) { throw "AgentBridge binary missing after extraction" }
 }
 
@@ -262,9 +332,16 @@ if (-not (Test-Path (Join-Path $cfg 'providers.json'))) {
 
 # --- Firewall -----------------------------------------------------------
 Log "Opening TCP port $OdooPort in Windows Firewall"
-netsh advfirewall firewall delete rule name="Odoo $OdooPort" 2>$null | Out-Null
-netsh advfirewall firewall add rule name="Odoo $OdooPort" dir=in action=allow protocol=TCP localport=$OdooPort 2>$null | Out-Null
-if ($LASTEXITCODE -ne 0) { Warn "Could not add the firewall rule (run as Administrator)." }
+# Kept inline instead of Invoke-Native: netsh needs the rule name as one token with its own
+# quotes, and the array form would mangle that quoting. Dropping to 'Continue' is enough to
+# stop a "no such rule" message on stderr from killing the install.
+$savedPref = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+netsh advfirewall firewall delete rule name="Odoo $OdooPort" 2>&1 | Out-Null
+netsh advfirewall firewall add rule name="Odoo $OdooPort" dir=in action=allow protocol=TCP localport=$OdooPort 2>&1 | Out-Null
+$rc = $LASTEXITCODE
+$ErrorActionPreference = $savedPref
+if ($rc -ne 0) { Warn "Could not add the firewall rule (exit $rc) - run the installer as Administrator if you need remote access." }
 
 Log "Starting Odoo on port $OdooPort"
 Start-Process -FilePath $py -ArgumentList @(
@@ -291,11 +368,13 @@ $odoo = Join-Path $root 'odoo\odoo-bin'
 $ab = Join-Path $root 'agentbridge\agent.exe'
 $port = 8069
 $dbPort = __DB_PORT__
+$dbUser = __DB_USER__
+$dbPass = __DB_PASS__
 function Test-Odoo { (Test-NetConnection -ComputerName 127.0.0.1 -Port $port -WarningAction SilentlyContinue).TcpTestSucceeded }
 if (-not (Test-Odoo)) {
     Start-Process -FilePath $py -ArgumentList @(
         $odoo, '-d', 'odoo_agent', '--db_host=127.0.0.1', "--db_port=$dbPort",
-        '--db_user', 'odoo', '--db_password', 'odoo',
+        '--db_user', $dbUser, '--db_password', $dbPass,
         ("--addons-path=" + (Join-Path $root 'odoo\addons')), "--http-port=$port", '--http-interface=0.0.0.0'
     ) -WindowStyle Hidden -RedirectStandardOutput (Join-Path $root 'odoo.log')
     for ($i = 0; $i -lt 40; $i++) { if (Test-Odoo) { break }; Start-Sleep -Seconds 2 }
@@ -304,7 +383,10 @@ Start-Process "http://localhost:$port"
 if (Test-Path $ab) { Start-Process -FilePath $ab -WorkingDirectory (Join-Path $root 'agentbridge') }
 '@
 $launcherPath = Join-Path $InstallRoot 'start.ps1'
-[System.IO.File]::WriteAllText($launcherPath, $launcherTemplate.Replace('__DB_PORT__', $DbPort), (New-Object System.Text.UTF8Encoding($false)))
+# Put the real role name and password in, quoted so nothing can break or be injected when they
+# contain $ ` " ' or spaces (a custom DB_USER / DB_PASSWORD used to break the shortcut).
+$launcherText = $launcherTemplate.Replace('__DB_PORT__', [string]$DbPort).Replace('__DB_USER__', (PsSingleQuote $DbUser)).Replace('__DB_PASS__', (PsSingleQuote $DbPassword))
+[System.IO.File]::WriteAllText($launcherPath, $launcherText, (New-Object System.Text.UTF8Encoding($false)))
 
 $ws = New-Object -ComObject WScript.Shell
 $desktop = [Environment]::GetFolderPath('Desktop')

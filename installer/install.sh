@@ -49,8 +49,12 @@ gen_password() { tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20; }
 run_wizard() {
   log "Questions"
   ask COMPANY_NAME  "Company name" "My Company"
-  ask ADMIN_EMAIL  "Odoo admin email" "admin@example.com"
-  ask ADMIN_PASS   "Odoo admin password" "$(gen_password)"
+  # The administrator is a user of the database created here, not an account anywhere: Odoo
+  # Community needs no registration, nothing is sent to odoo.com, and nobody is asked for Odoo
+  # credentials. The login and the password are generated locally and printed at the end;
+  # ADMIN_EMAIL / ADMIN_PASS still override them for unattended runs.
+  ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.com}"
+  ADMIN_PASS="${ADMIN_PASS:-$(gen_password)}"
   ask LLM_BASE_URL "LLM provider base URL (OpenAI-compatible)" "http://192.168.43.253:8741/v1"
   ask LLM_KEY      "LLM provider API key" ""
   ask LLM_MODEL    "LLM model name" "halogen-qwen3.8-flash-next"
@@ -328,7 +332,7 @@ main() {
   echo "    Then type a request such as 'list the customers'."
   echo
   echo "  Odoo URL:       http://localhost:$ODOO_PORT"
-  echo "  Admin:          $ADMIN_EMAIL / $ADMIN_PASS"
+  echo "  Odoo login:     $ADMIN_EMAIL / $ADMIN_PASS   (local to this PC - no Odoo account needed)"
   echo "  Install root:   $INSTALL_ROOT"
   echo "  AgentBridge:    $AB_DIR"
   echo

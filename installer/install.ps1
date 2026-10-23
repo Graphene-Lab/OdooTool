@@ -97,8 +97,12 @@ function Invoke-Native {
 # --- Wizard (environment variables make it unattended) ------------------
 Log "Questions"
 $Company    = Ask "Company name" "My Company" 'COMPANY_NAME'
-$AdminEmail = Ask "Odoo admin email" "admin@example.com" 'ADMIN_EMAIL'
-$AdminPass  = AskSecret "Odoo admin password" (GeneratePassword) 'ADMIN_PASS'
+# The administrator is a user of the database created here, not an account anywhere: Odoo
+# Community needs no registration, nothing is sent to odoo.com, and nobody is asked for Odoo
+# credentials. The login and the password are generated locally and printed at the end;
+# ADMIN_EMAIL / ADMIN_PASS still override them for unattended runs.
+$AdminEmail = if ([string]::IsNullOrWhiteSpace($env:ADMIN_EMAIL)) { 'admin@example.com' } else { $env:ADMIN_EMAIL }
+$AdminPass  = if ([string]::IsNullOrWhiteSpace($env:ADMIN_PASS))  { GeneratePassword }    else { $env:ADMIN_PASS }
 $LlmUrl     = Ask "LLM provider base URL (OpenAI-compatible)" "http://192.168.43.253:8741/v1" 'LLM_BASE_URL'
 $LlmKey     = AskSecret "LLM provider API key" "" 'LLM_KEY'
 $LlmModel   = Ask "LLM model name" "halogen-qwen3.8-flash-next" 'LLM_MODEL'
@@ -479,7 +483,7 @@ Write-Host "    It starts Odoo, opens it in the browser and launches the assista
 Write-Host "    Then type a request such as 'list the customers'."
 Write-Host ''
 Write-Host "  Odoo URL:       http://localhost:$OdooPort"
-Write-Host "  Admin:          $AdminEmail / $AdminPass"
+Write-Host "  Odoo login:     $AdminEmail / $AdminPass   (local to this PC - no Odoo account needed)"
 Write-Host "  Install root:   $InstallRoot"
 Write-Host "  AgentBridge:    $AbDir"
 Write-Host "  Firewall:       TCP $OdooPort open"

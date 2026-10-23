@@ -123,10 +123,23 @@ The installer downloads the public AgentBridge release with `curl` (built into W
 GitHub sign-in is needed.
 
 The `odoo` database role is created for you. On Windows, if that role does not exist yet — or was
-created earlier with a different password — the installer asks once for the `postgres` superuser
-password, the one chosen when PostgreSQL was installed. On Linux and WSL it uses `sudo -u postgres`
-instead, so no password is asked there. Re-running the installer is safe either way: it continues
-where it stopped and reuses what is already there.
+created earlier with a different password — the installer asks for the `postgres` superuser
+password: the one that was chosen when PostgreSQL was installed on that machine. It is now asked up
+to three times, so a typo no longer ends the installation, and what you type stays hidden on screen
+(it used to be echoed in clear text). If nobody knows that password, it can be reset: stop the
+PostgreSQL service, change the method for connections from `127.0.0.1` in `pg_hba.conf` from
+`scram-sha-256` to `trust`, start the service again, connect with `psql -U postgres -h 127.0.0.1`
+(no password is asked then), run `ALTER USER postgres PASSWORD '<the password you want>';`, put
+`pg_hba.conf` back to `scram-sha-256` and restart the service. On Linux and WSL it uses
+`sudo -u postgres` instead, so no password is asked there — and a re-run now also repairs the
+password of an `odoo` role that already exists, instead of leaving the old one in place.
+Re-running the installer is safe either way: it continues where it stopped and reuses what is
+already there.
+
+At the end the installer prints a summary of the run. If anything did not work — a missing tool, a
+package that failed to install, a database that was not created — the last thing on screen lists
+what is still broken and what to do about it, instead of printing a bare "Done." over a stack that
+never actually came up.
 
 For a fully unattended run, set these environment variables before starting:
 `COMPANY_NAME`, `ADMIN_EMAIL`, `ADMIN_PASS`, `LLM_BASE_URL`, `LLM_KEY`, `LLM_MODEL`,

@@ -77,8 +77,23 @@ install_prereqs() {
 configure_postgres() {
   log "Configuring PostgreSQL user '$DB_USER'"
   sudo service postgresql start || sudo pg_ctlcluster 16 main start || true
-  sudo -u postgres psql -p "$DB_PORT" -tc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" | grep -q 1 || \
-    sudo -u postgres psql -p "$DB_PORT" -c "CREATE ROLE $DB_USER LOGIN SUPERUSER PASSWORD '$DB_PASSWORD';"
+  # Create the role when it is missing, repair the password when it is already there with a
+  # different one. Only CREATE used to leave an old password in place on a re-run with a changed
+  # DB_PASSWORD, and the Odoo database step minutes later then failed with an authentication error.
+  if sudo -u postgres psql -p "$DB_PORT" -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" | grep -q 1; then
+    sudo -u postgres psql -p "$DB_PORT" -c "ALTER ROLE $DB_USER LOGIN SUPERUSER PASSWORD '$DB_PASSWORD';" \
+      || warn "could not set the password for the existing role '$DB_USER'"
+  else
+    sudo -u postgres psql -p "$DB_PORT" -c "CREATE ROLE $DB_USER LOGIN SUPERUSER PASSWORD '$DB_PASSWORD';" \
+      || warn "could not create the role '$DB_USER'"
+  fi
+  # Verify with the credentials the rest of the stack actually uses, so a wrong password is
+  # reported here instead of in the middle of the Odoo setup.
+  if PGPASSWORD="$DB_PASSWORD" psql -U "$DB_USER" -h 127.0.0.1 -p "$DB_PORT" -d postgres -tAc 'select 1' 2>/dev/null | grep -q 1; then
+    log "role '$DB_USER' ready"
+  else
+    warn "role '$DB_USER' cannot connect with that password; the Odoo database step will fail until it does"
+  fi
 }
 
 install_odoo() {

@@ -27,6 +27,13 @@ $OdooPort   = if ($env:ODOO_PORT)   { $env:ODOO_PORT }   else { '8069' }
 
 function Log($m)  { Write-Host "`n==> $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "! $m" -ForegroundColor Yellow }
+
+# Everything that goes wrong but does not stop the install is collected here, so the final
+# summary can tell the user what is NOT working instead of printing a bare "Done." over a
+# stack that silently never came up.
+$Problems = @()
+function Problem($m) { Write-Host "! $m" -ForegroundColor Yellow; $script:Problems += $m }
+
 function Ask($label,$def,$envName) {
     if ($envName -and -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($envName))) {
         return [Environment]::GetEnvironmentVariable($envName)
@@ -34,7 +41,28 @@ function Ask($label,$def,$envName) {
     $r = Read-Host "$label [$def]"
     if ([string]::IsNullOrWhiteSpace($r)) { return $def } else { return $r }
 }
+
+# Same as Ask, but what you type stays hidden on screen. Plain Read-Host echoes the typed text,
+# which means a secret (an admin password, a database superuser password) ends up visible in the
+# console window and can be copied straight out of it. Here the answer is read into a SecureString
+# and turned back into text only in memory. An environment variable of the same name still wins,
+# so unattended runs behave exactly as before.
+function AskSecret($label,$def,$envName) {
+    if ($envName -and -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($envName))) {
+        return [Environment]::GetEnvironmentVariable($envName)
+    }
+    $ss = Read-Host "$label [$def]" -AsSecureString
+    if ($ss.Length -eq 0) { return $def }
+    $hglobal = [System.Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($ss)
+    try  { return [System.Runtime.InteropServices.Marshal]::PtrToStringUni($hglobal) }
+    finally { if ($hglobal -ne [IntPtr]::Zero) { [System.Runtime.InteropServices.Marshal]::FreeHGlobal($hglobal) } }
+}
+
 function GeneratePassword { -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 20 | ForEach-Object {[char]$_}) }
+
+# Keeps only the last $n characters of a program's output, so a long error dump never buries the
+# one line that actually matters.
+function Tail($t,$n) { $s = ('' + $t).Trim(); if ($s.Length -le $n) { return $s }; return $s.Substring($s.Length - $n) }
 
 # Builds a PowerShell single-quoted literal (any embedded quote is doubled), so the generated
 # launcher keeps the exact role name and password even when they contain $ ` " ' or spaces.
@@ -70,24 +98,32 @@ function Invoke-Native {
 Log "Questions"
 $Company    = Ask "Company name" "My Company" 'COMPANY_NAME'
 $AdminEmail = Ask "Odoo admin email" "admin@example.com" 'ADMIN_EMAIL'
-$AdminPass  = Ask "Odoo admin password" (GeneratePassword) 'ADMIN_PASS'
+$AdminPass  = AskSecret "Odoo admin password" (GeneratePassword) 'ADMIN_PASS'
 $LlmUrl     = Ask "LLM provider base URL (OpenAI-compatible)" "http://192.168.43.253:8741/v1" 'LLM_BASE_URL'
-$LlmKey     = Ask "LLM provider API key" "" 'LLM_KEY'
+$LlmKey     = AskSecret "LLM provider API key" "" 'LLM_KEY'
 $LlmModel   = Ask "LLM model name" "halogen-qwen3.8-flash-next" 'LLM_MODEL'
 
 # --- Prerequisites (install only what is missing) -----------------------
 Log "Checking PostgreSQL, Python and Git"
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     $r = Invoke-Native -Exe 'winget' -ArgList @('install', '-e', '--id', 'Git.Git', '--accept-source-agreements', '--accept-package-agreements')
-    if ($r.Code -ne 0) { Warn "winget could not install Git (exit $($r.Code)). Install Git yourself if it is missing." }
+    if ($r.Code -ne 0) { Problem "winget could not install Git (exit $($r.Code)). The Odoo download needs Git; install it yourself if it is missing." }
 }
 $psql = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
          Select-Object -First 1).FullName
+# psql can also live somewhere else (a non-default install folder, a portable install), so PATH
+# is checked too instead of assuming the default prefix.
+if (-not $psql) { $psql = (Get-Command psql -ErrorAction SilentlyContinue).Source }
 if (-not $psql) {
+    Write-Host "PostgreSQL is not installed. winget installs it now; its own installer asks you to choose the password for the '$PgSuper' account. Remember what you type - the next question needs that same password."
     $r = Invoke-Native -Exe 'winget' -ArgList @('install', '-e', '--id', 'PostgreSQL.PostgreSQL.16', '--accept-source-agreements', '--accept-package-agreements')
-    if ($r.Code -ne 0) { Warn "winget could not install PostgreSQL (exit $($r.Code))." }
+    if ($r.Code -ne 0) { Problem "winget could not install PostgreSQL (exit $($r.Code))." }
+    # A just-installed PostgreSQL is not on this window's PATH yet, so refresh it before looking.
+    $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
+               [System.Environment]::GetEnvironmentVariable('Path','User')
     $psql = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
              Select-Object -First 1).FullName
+    if (-not $psql) { $psql = (Get-Command psql -ErrorAction SilentlyContinue).Source }
 }
 # Python: use an installed 3.10-3.13 if present, otherwise install 3.12.
 $pyOk = $false
@@ -99,7 +135,7 @@ if (Get-Command py -ErrorAction SilentlyContinue) {
 }
 if (-not $pyOk -and -not (Get-Command python -ErrorAction SilentlyContinue)) {
     $r = Invoke-Native -Exe 'winget' -ArgList @('install', '-e', '--id', 'Python.Python.3.12', '--accept-source-agreements', '--accept-package-agreements')
-    if ($r.Code -ne 0) { Warn "winget could not install Python (exit $($r.Code))." }
+    if ($r.Code -ne 0) { Problem "winget could not install Python (exit $($r.Code))." }
 }
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
             [System.Environment]::GetEnvironmentVariable('Path','User')
@@ -107,54 +143,75 @@ $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';'
 # --- PostgreSQL role ----------------------------------------------------
 Log "Configuring PostgreSQL user '$DbUser'"
 if (-not $psql) {
-    Warn "psql not found. Create a PostgreSQL role named '$DbUser' (superuser, password '$DbPassword') manually."
+    throw "psql was not found, so the '$DbUser' database role cannot be prepared and nothing after this would work. Install PostgreSQL first (for example: winget install -e --id PostgreSQL.PostgreSQL.16), choose a password for the '$PgSuper' account and remember it, then run this installer again - it continues where it stopped."
+}
+
+# Try the account the whole stack will use. On a fresh machine it does not exist yet, so a
+# failing probe here is normal and must NOT stop the install: this exact line used to kill
+# the whole script (NativeCommandError) before the question below could even be asked.
+# psql exits 0 only when it really connected, so the exit code is the signal we trust.
+$env:PGPASSWORD = $DbPassword
+$probe = Invoke-Native -Exe $psql -ArgList @('-U', $DbUser, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', 'select 1')
+if ($probe.Code -eq 0) {
+    Log "role '$DbUser' already works"
 } else {
-    # Try the account the whole stack will use. On a fresh machine it does not exist yet, so a
-    # failing probe here is normal and must NOT stop the install: this exact line used to kill
-    # the whole script (NativeCommandError) before the question below could even be asked.
-    # psql exits 0 only when it really connected, so the exit code is the signal we trust.
-    $env:PGPASSWORD = $DbPassword
-    $probe = Invoke-Native -Exe $psql -ArgList @('-U', $DbUser, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', 'select 1')
-    if ($probe.Code -eq 0) {
-        Log "role '$DbUser' already works"
-    } else {
-        $pgPass = Ask "PostgreSQL '$PgSuper' superuser password" '' 'PG_SUPERPASS'
-        if ([string]::IsNullOrWhiteSpace($pgPass)) {
-            throw "The database role '$DbUser' is not ready and no '$PgSuper' password was given. Re-run and type the '$PgSuper' password (the one chosen when PostgreSQL was installed), or create the role yourself with: CREATE ROLE $DbUser LOGIN SUPERUSER PASSWORD '$DbPassword';"
-        }
+    # The role is not usable yet, so the '$PgSuper' superuser password is needed: the one that was
+    # typed when PostgreSQL was installed on this machine. Two things used to make this hopeless to
+    # read. First, "$act.Code" inside a double-quoted string does NOT expand the Code property - it
+    # expands the whole object, so the message printed "@{Code=2; Text=...}.Code" instead of "2".
+    # Second, a single wrong answer aborted everything and the user had to start from scratch.
+    # Now it asks again, up to 3 times, and says in plain words what happened. With PG_SUPERPASS
+    # set (unattended run) there is no prompt and only one attempt: retrying the same value twice
+    # cannot turn a wrong password into a right one.
+    $act = $null
+    $maxTries = if ($env:PG_SUPERPASS) { 1 } else { 3 }
+    for ($try = 1; $try -le $maxTries; $try++) {
+        $askLabel = "PostgreSQL '$PgSuper' superuser password"
+        if ($try -gt 1) { $askLabel = "PostgreSQL '$PgSuper' superuser password (try $try of $maxTries)" }
+        $pgPass = AskSecret $askLabel '' 'PG_SUPERPASS'
+        if ([string]::IsNullOrWhiteSpace($pgPass)) { break }
+        $env:PGPASSWORD = $pgPass
         # This one query tells us both things at once: whether the '$PgSuper' password works
         # (exit code) and whether the role is already there (its answer).
-        $env:PGPASSWORD = $pgPass
         $act = Invoke-Native -Exe $psql -ArgList @('-U', $PgSuper, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', "select 1 from pg_roles where rolname='$DbUser'")
-        if ($act.Code -ne 0) {
-            throw "Cannot connect to PostgreSQL as '$PgSuper' (exit $act.Code): $($act.Text). Type the correct '$PgSuper' password and run the installer again - it continues where it stopped."
-        }
-        # Create the role when it is missing, repair the password when it is already there with
-        # a different one. Both cases used to break the Odoo database step some minutes later.
-        if ($act.Text -eq '1') { $verb = 'ALTER' } else { $verb = 'CREATE' }
-        $done = Invoke-Native -Exe $psql -ArgList @('-U', $PgSuper, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-c', "$verb ROLE $DbUser LOGIN SUPERUSER PASSWORD '$DbPassword'")
-        if ($done.Code -ne 0) {
-            throw "Could not ${verb} the database role '$DbUser' (exit $done.Code): $($done.Text)"
-        }
-        # Verify with the credentials the rest of the stack actually uses, so a wrong password is
-        # reported here instead of minutes later, in the middle of the Odoo setup.
-        $env:PGPASSWORD = $DbPassword
-        $check = Invoke-Native -Exe $psql -ArgList @('-U', $DbUser, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', 'select 1')
-        if ($check.Code -eq 0) {
-            Log "role '$DbUser' ready"
-        } else {
-            throw "The role '$DbUser' still cannot connect to the database ($($check.Text)). Everything after this needs that role, so the install stops here. Check the password and run the installer again."
+        if ($act.Code -eq 0) { break }
+        if ($try -lt $maxTries) {
+            Warn "That is not the '$PgSuper' password (exit $($act.Code)): PostgreSQL answered 'password authentication failed'. It is the password that was chosen when PostgreSQL was installed on this PC - it is not the Odoo admin password you just typed above."
         }
     }
-    Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+    if ($null -eq $act) {
+        throw "No '$PgSuper' password was given, so the '$DbUser' role cannot be prepared. Run the installer again and type the password for '$PgSuper' (the one chosen when PostgreSQL was installed), or have someone create the role for you with: CREATE ROLE $DbUser LOGIN SUPERUSER PASSWORD '$DbPassword';"
+    }
+    if ($act.Code -ne 0) {
+        throw "Cannot connect to PostgreSQL as '$PgSuper' (exit $($act.Code)). Last answer from the database: $(Tail $act.Text 300). Type the correct '$PgSuper' password and run the installer again - it continues where it stopped. If nobody knows that password it can be reset: stop the PostgreSQL Windows service, edit its pg_hba.conf so that connections from 127.0.0.1 use 'trust' instead of 'scram-sha-256', start the service again, connect with 'psql -U $PgSuper -h 127.0.0.1' (no password is asked then), run ALTER USER $PgSuper PASSWORD 'the password you want';, then put pg_hba.conf back to 'scram-sha-256' and restart the service."
+    }
+    # Create the role when it is missing, repair the password when it is already there with
+    # a different one. Both cases used to break the Odoo database step some minutes later.
+    # The answer is matched, not compared for equality: any noise ahead of the digit still means
+    # "the role exists", and picking CREATE there would fail with "role already exists".
+    if ($act.Text -match '^\s*1\s*$') { $verb = 'ALTER' } else { $verb = 'CREATE' }
+    $done = Invoke-Native -Exe $psql -ArgList @('-U', $PgSuper, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-c', "$verb ROLE $DbUser LOGIN SUPERUSER PASSWORD '$DbPassword'")
+    if ($done.Code -ne 0) {
+        throw "Could not ${verb} the database role '$DbUser' (exit $($done.Code)): $(Tail $done.Text 300)"
+    }
+    # Verify with the credentials the rest of the stack actually uses, so a wrong password is
+    # reported here instead of minutes later, in the middle of the Odoo setup.
+    $env:PGPASSWORD = $DbPassword
+    $check = Invoke-Native -Exe $psql -ArgList @('-U', $DbUser, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', 'select 1')
+    if ($check.Code -eq 0) {
+        Log "role '$DbUser' ready"
+    } else {
+        throw "The role '$DbUser' still cannot connect to the database ($(Tail $check.Text 200)). Everything after this needs that role, so the install stops here. Check the password and run the installer again."
+    }
 }
+Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
 
 # --- Odoo ---------------------------------------------------------------
 Log "Cloning Odoo Community ($OdooBranch)"
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
 if (-not (Test-Path $OdooDir)) {
     $c = Invoke-Native -Exe 'git' -ArgList @('clone', '--depth', '1', '--branch', $OdooBranch, $OdooRepo, $OdooDir)
-    if ($c.Code -ne 0) { Warn "git clone finished with exit $($c.Code): $($c.Text)" }
+    if ($c.Code -ne 0) { Problem "git clone finished with exit $($c.Code): $(Tail $c.Text 300). Without the Odoo source there is nothing to install." }
 }
 
 Log "Installing Odoo Python requirements in a virtualenv"
@@ -188,7 +245,7 @@ $reqWin = Get-Content (Join-Path $OdooDir 'requirements.txt') |
           Where-Object { $_ -notmatch '^\s*python-ldap' }
 $reqWin | Set-Content (Join-Path $InstallRoot 'requirements-win.txt') -Encoding ASCII
 $rp = Invoke-Native -Exe $py -ArgList @('-m', 'pip', 'install', '-r', (Join-Path $InstallRoot 'requirements-win.txt'))
-if ($rp.Code -ne 0) { Warn "pip install finished with exit $($rp.Code); last messages: $($rp.Text)" }
+if ($rp.Code -ne 0) { Problem "pip install finished with exit $($rp.Code); last messages: $(Tail $rp.Text 400)" }
 
 Log "Creating the Odoo database with the base modules"
 # --db_host forces TCP password auth; the UNIX-socket shortcut does not exist on Windows.
@@ -198,7 +255,7 @@ $db = Invoke-Native -Exe $py -ArgList @(
     '--db_port', $DbPort, '--db_user', $DbUser, '--db_password', $DbPassword,
     "--addons-path=$addons", '-i', 'base', '--stop-after-init', '--without-demo')
 if ($db.Code -eq 0) { Log "database 'odoo_agent' created" }
-else { Warn "Odoo could not create the database (exit $($db.Code)). Last messages: $($db.Text)" }
+else { Problem "Odoo could not create the database (exit $($db.Code)). Last messages: $(Tail $db.Text 400). Without a database the assistant cannot read or change any data." }
 
 # --- Admin credentials + API key ----------------------------------------
 # Reuse the API key from a previous install instead of creating a new one.
@@ -242,7 +299,7 @@ Start-Process -FilePath $py -ArgumentList @(
 $OdooApiKey = ''
 if (Test-Path $outPath) { $OdooApiKey = (Get-Content -Raw $outPath).Trim() }
 if ([string]::IsNullOrWhiteSpace($OdooApiKey)) {
-    Warn "Could not auto-create the API key. Create it in Odoo (Preferences -> Account Security -> New API Key) and set it in the AgentBridge config."
+    Problem "Could not auto-create the API key. Create it in Odoo (Preferences -> Account Security -> New API Key) and put it in $odooJsonPath, otherwise the assistant cannot call Odoo."
 }
 } else {
     Log "Reusing the existing Odoo API key"
@@ -315,7 +372,7 @@ try {
     $zip.Dispose()
     Log "OdooTool plugin installed (version $ver)"
 } catch {
-    Warn ("Could not install the OdooTool plugin: " + $_.Exception.Message)
+    Problem ("Could not install the OdooTool plugin: " + $_.Exception.Message)
 }
 
 Log "Configuring AgentBridge with the LLM provider and the OdooTool plugin"
@@ -356,7 +413,7 @@ for ($i = 0; $i -lt 30; $i++) {
     try { if ((Invoke-WebRequest "http://localhost:$OdooPort/web/login" -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200) { $up = $true; break } } catch {}
     Start-Sleep -Seconds 2
 }
-if (-not $up) { Warn "Odoo did not answer on port $OdooPort after 60s; check $InstallRoot\odoo.log." }
+if (-not $up) { Problem "Odoo did not answer on port $OdooPort after 60s; check $InstallRoot\odoo.log." }
 
 # --- One-click launcher + shortcut -------------------------------------
 Log "Creating the one-click launcher and shortcuts"
@@ -403,7 +460,19 @@ foreach ($lnk in @((Join-Path $desktop 'AI Odoo.lnk'), (Join-Path $startMenu 'AI
 }
 
 Write-Host ''
-Log 'Done.'
+# A bare "Done." over a stack that never actually came up is what left the user in issue #3 with
+# no idea what had failed. Anything collected during the run is listed here instead, so the last
+# thing on screen says plainly whether the result is usable and what is standing in the way.
+if ($Problems.Count -gt 0) {
+    Log "Finished with $($Problems.Count) problem(s). Please read this before using the assistant."
+    Write-Host "  The installation did not fully work. What was reported:"
+    foreach ($p in $Problems) { Write-Host "    - $p" -ForegroundColor Yellow }
+    Write-Host ''
+    Write-Host "  Fix what is listed above and run install.bat again: it continues where it stopped"
+    Write-Host "  and reuses everything that is already there."
+} else {
+    Log 'Done.'
+}
 Write-Host "  HOW TO START:"
 Write-Host "    Double-click the 'AI Odoo' icon on the Desktop (or in the Start Menu)."
 Write-Host "    It starts Odoo, opens it in the browser and launches the assistant."

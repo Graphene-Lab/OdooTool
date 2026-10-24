@@ -146,6 +146,11 @@ $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';'
 
 # --- PostgreSQL role ----------------------------------------------------
 Log "Configuring PostgreSQL user '$DbUser'"
+# Nothing the installer asks for here is an Odoo password. The role 'odoo' created for the ERP is
+# a database account on this PC; it is not an Odoo.com account and Odoo Community needs no
+# registration, so there is no Odoo password to remember. The only value requested below is the
+# 'postgres' superuser password that PostgreSQL itself asked for when it was installed on this
+# machine — it proves you are allowed to create database roles here.
 if (-not $psql) {
     throw "psql was not found, so the '$DbUser' database role cannot be prepared and nothing after this would work. Install PostgreSQL first (for example: winget install -e --id PostgreSQL.PostgreSQL.16), choose a password for the '$PgSuper' account and remember it, then run this installer again - it continues where it stopped."
 }
@@ -170,8 +175,8 @@ if ($probe.Code -eq 0) {
     $act = $null
     $maxTries = if ($env:PG_SUPERPASS) { 1 } else { 3 }
     for ($try = 1; $try -le $maxTries; $try++) {
-        $askLabel = "PostgreSQL '$PgSuper' superuser password"
-        if ($try -gt 1) { $askLabel = "PostgreSQL '$PgSuper' superuser password (try $try of $maxTries)" }
+        $askLabel = "PostgreSQL $PgSuper superuser password (from the PostgreSQL install, not the Odoo admin password above)"
+        if ($try -gt 1) { $askLabel = "$askLabel (try $try of $maxTries)" }
         $pgPass = AskSecret $askLabel '' 'PG_SUPERPASS'
         if ([string]::IsNullOrWhiteSpace($pgPass)) { break }
         $env:PGPASSWORD = $pgPass

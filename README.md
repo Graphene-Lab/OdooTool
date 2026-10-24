@@ -122,6 +122,18 @@ window at `http://localhost:8069`.
 The installer downloads the public AgentBridge release with `curl` (built into Windows 10+), so no
 GitHub sign-in is needed.
 
+### Which password does the installer ask for?
+
+If the installer ever stops on "PostgreSQL 'postgres' superuser password", that is **not** a
+password you have to remember from anywhere else: it is the one you chose for the `postgres`
+account when PostgreSQL itself was installed on this PC. It is asked so the installer can create
+the database role that Odoo uses. It has nothing to do with the Odoo admin password printed at the
+end, nor with any Odoo.com account (Odoo Community needs none). If you typed the wrong value, just
+run the installer again and try again — the message makes plain words what was wrong. If nobody
+knows that password, it can be reset (stop the PostgreSQL service, switch `pg_hba.conf` from
+`scram-sha-256` to `trust`, connect with `psql -U postgres -h 127.0.0.1`, run
+`ALTER USER postgres PASSWORD '<the password you want>';`, then restore `pg_hba.conf`).
+
 The `odoo` database role is created for you. On Windows, if that role does not exist yet — or was
 created earlier with a different password — the installer asks for the `postgres` superuser
 password: the one that was chosen when PostgreSQL was installed on that machine. It is now asked up

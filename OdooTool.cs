@@ -12,6 +12,7 @@ namespace AIOrchestrator.API;
 /// Every operation runs as the configured Odoo user, so the ERP's own permissions apply.
 /// Start with get_models() to discover what data is available, then get_fields() to learn
 /// a model's structure before searching or writing.</summary>
+[ToolPurpose(ToolPurpose.BusinessData)]
 public class OdooTool : BaseAgentTool
 {
     private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };

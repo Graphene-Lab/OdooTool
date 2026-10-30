@@ -1,0 +1,2 @@
+# Keep the shell installer byte-for-byte identical to the blob: CRLF would break bash.
+*.sh text eol=lf

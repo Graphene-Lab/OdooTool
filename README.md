@@ -40,7 +40,8 @@ running Odoo instance at `http://localhost:8069`.
 **This is the easy way.** You do not need .NET, Git, Docker, a Python environment or any manual
 configuration: one script installs and wires the whole stack — **PostgreSQL + Odoo 20 Community +
 AgentBridge + OdooTool** — and only asks for the few things nobody can guess for you (company name,
-admin email, the PostgreSQL `postgres` password when it is needed, and which AI provider to use).
+admin email and which AI provider to use). It never asks for a PostgreSQL password: when PostgreSQL
+is missing the installer creates it and assigns the superuser password itself.
 Press Enter to accept every suggestion.
 
 ### Windows (10/11)
@@ -225,22 +226,25 @@ keep Odoo backups — as with any ERP automation.
 No. Run one script and talk to the assistant in plain language.
 
 **Which password does the installer ask for?**
-If the installer stops on "PostgreSQL 'postgres' superuser password", that is **not** a password
-you have to remember from anywhere else: it is the one you chose for the `postgres` account when
-PostgreSQL itself was installed on this PC. It is asked so the installer can create the database
-role that Odoo uses. It has nothing to do with the Odoo admin password printed at the end, nor with
-any Odoo.com account (Odoo Community needs none). If you typed the wrong value, just run the
-installer again and try again — the message says in plain words what was wrong. If nobody knows
-that password, it can be reset: stop the PostgreSQL service, switch `pg_hba.conf` from
-`scram-sha-256` to `trust`, connect with `psql -U postgres -h 127.0.0.1`, run
-`ALTER USER postgres PASSWORD '<the password you want>';`, then restore `pg_hba.conf`.
+None for PostgreSQL — and that is deliberate. The database superuser account (`postgres`) is a local
+account on this PC, not an Odoo.com account, and when the installer installs PostgreSQL it also
+assigns that password: **`odoo`** by default, printed in the final summary and overridable with
+`PG_SUPERPASS`. Nothing has to be typed, remembered or looked up, and it is unrelated to the Odoo
+admin password printed at the end.
 
-The `odoo` database role is created for you. On Windows, if that role does not exist yet — or was
-created earlier with a different password — the installer asks for the `postgres` superuser
-password: the one that was chosen when PostgreSQL was installed on that machine. It is asked up to
-three times, so a typo no longer ends the installation, and what you type stays hidden on screen.
-On Linux and WSL it uses `sudo -u postgres` instead, so no password is asked there — and a re-run
-also repairs the password of an `odoo` role that already exists.
+If PostgreSQL was already installed on the PC (by you, or by an earlier run of this installer) with
+a different superuser password, the installer works it out by itself: it tries the password it would
+have assigned, then the values PostgreSQL installers ship with, and if none of them works it resets
+the password through PostgreSQL's local `trust` escape hatch (stop the service, let connections from
+`127.0.0.1` in without a password, run `ALTER USER postgres PASSWORD ...`, restore `pg_hba.conf` and
+restart). That reset needs Administrator rights, so Windows may show its own consent prompt — never a
+password prompt. A run without those rights still does not stop: the final summary says which step
+was left undone, and re-running `install.bat` as Administrator completes it.
+
+The `odoo` database role is created for you, and the installer repairs its password when the role
+already exists with a different one. On Linux and WSL it uses `sudo -u postgres` instead, so no
+password is involved there either: peer authentication over the local socket needs none, and every
+`psql` call passes `--no-password` (`-w`) so the installer can never stop and wait for input.
 
 At the end the installer prints a summary of the run. If anything did not work — a missing tool, a
 package that failed to install, a database that was not created — the last thing on screen lists

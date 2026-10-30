@@ -23,6 +23,11 @@ $DbUser     = if ($env:DB_USER)     { $env:DB_USER }     else { 'odoo' }
 $DbPassword = if ($env:DB_PASSWORD) { $env:DB_PASSWORD } else { 'odoo' }
 $DbPort     = if ($env:DB_PORT)     { $env:DB_PORT }     else { '5432' }
 $PgSuper    = if ($env:PG_SUPERUSER){ $env:PG_SUPERUSER } else { 'postgres' }
+# Password this installer assigns to the local PostgreSQL superuser account. The account is created
+# by the installer itself, so asking the user for its password means asking for something nobody can
+# know (a silent PostgreSQL install picks one on its own and shows it to no one). PG_SUPERPASS only
+# exists to override it in unattended runs.
+$PgSuperPass = if ($env:PG_SUPERPASS) { $env:PG_SUPERPASS } else { 'odoo' }
 $OdooPort   = if ($env:ODOO_PORT)   { $env:ODOO_PORT }   else { '8069' }
 
 function Log($m)  { Write-Host "`n==> $m" -ForegroundColor Green }
@@ -94,6 +99,126 @@ function Invoke-Native {
     return $res
 }
 
+# psql can live under the default prefix, somewhere else (a custom folder, a portable install) or
+# on the PATH, so all three are checked instead of assuming the default prefix.
+function Find-Psql {
+    $p = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
+          Select-Object -First 1).FullName
+    if (-not $p) { $p = (Get-Command psql -ErrorAction SilentlyContinue).Source }
+    return $p
+}
+
+# The data directory belongs to the installation psql was found in; a custom location is read back
+# from the Windows service, which is told the directory with -D.
+function Find-PgDataDir([string]$psqlPath) {
+    if ($psqlPath) {
+        $d = Join-Path (Split-Path (Split-Path $psqlPath -Parent) -Parent) 'data'
+        if (Test-Path (Join-Path $d 'pg_hba.conf')) { return $d }
+    }
+    foreach ($svc in (Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'postgresql*' })) {
+        $m = [regex]::Match([string]$svc.PathName, '-D\s+"?([^"]+)"?')
+        if ($m.Success) {
+            $cand = $m.Groups[1].Value.Trim()
+            if (Test-Path (Join-Path $cand 'pg_hba.conf')) { return $cand }
+        }
+    }
+    return $null
+}
+
+# The service that runs this data directory (so a reset restarts the right one).
+function Find-PgService([string]$dataDir) {
+    $all = @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'postgresql*' })
+    if ($dataDir) {
+        $match = $all | Where-Object { [string]$_.PathName -like "*$dataDir*" } | Select-Object -First 1
+        if ($match) { return $match.Name }
+    }
+    if ($all.Count -gt 0) { return $all[0].Name }
+    return $null
+}
+
+# The port written in postgresql.conf. A PostgreSQL set up earlier (or by another tool) can be on
+# 5433 while 5432 is taken, and connecting to the wrong port looks exactly like a wrong password.
+function Get-PgConfPort([string]$dataDir) {
+    if (-not $dataDir) { return $null }
+    $conf = Join-Path $dataDir 'postgresql.conf'
+    if (-not (Test-Path $conf)) { return $null }
+    $m = Select-String -Path $conf -Pattern '^\s*port\s*=\s*(\d+)' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($m) { return $m.Matches[0].Groups[1].Value }
+    return $null
+}
+
+function Test-Elevated {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    return (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# Replaces an unknown superuser password with the one this installer assigns, using PostgreSQL's own
+# escape hatch: for a single restart the local TCP connections are trusted, which is the standard way
+# back into a server whose password nobody has. pg_hba.conf sits under Program Files and the service
+# has to be restarted, so a short helper script does it with Administrator rights - Windows may show
+# its own consent prompt, but the user never has to type a database password. Returns the working
+# password, or $null when the reset was not possible.
+function Reset-PgSuperPassword {
+    param([string]$DataDir, [string]$Service, [string]$NewPass)
+    if (-not $DataDir -or -not $Service -or -not $psql) { return $null }
+    $helper = Join-Path $env:TEMP 'odootool-pg-reset.ps1'
+    $result = Join-Path $env:TEMP 'odootool-pg-reset.txt'
+    Remove-Item $result -Force -ErrorAction SilentlyContinue
+    $body = @'
+param([string]$Psql, [string]$DataDir, [string]$Service, [string]$Super, [string]$Pass, [string]$Port, [string]$Result)
+$ErrorActionPreference = 'Stop'
+$conf   = Join-Path $DataDir 'pg_hba.conf'
+$backup = "$conf.odootool-backup"
+$script:ok = $false
+$script:err = ''
+try {
+    Copy-Item $conf $backup -Force
+    $text = Get-Content -Raw $conf
+    $text = [regex]::Replace($text, '(?m)^(\s*host\s+\S+\s+\S+\s+(?:127\.0\.0\.1/32|::1/128)\s+)\S+', '${1}trust')
+    Set-Content -Path $conf -Value $text -Encoding ASCII
+    Restart-Service -Name $Service -Force
+    $sql = "ALTER USER $Super WITH PASSWORD '" + ($Pass -replace "'", "''") + "';"
+    $ErrorActionPreference = 'Continue'
+    for ($i = 0; $i -lt 15; $i++) {
+        Start-Sleep -Seconds 2
+        Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+        # -w: never prompt. If the trust line did not take effect psql must fail at once instead of
+        # waiting on a hidden password prompt that nobody can see or answer.
+        $out = & $Psql -w -U $Super -h 127.0.0.1 -p $Port -d postgres -c $sql 2>&1
+        if ($LASTEXITCODE -eq 0) { $script:ok = $true; break }
+        $script:err = ('psql exit ' + $LASTEXITCODE + ': ' + (($out | Out-String).Trim()))
+    }
+} catch {
+    $script:err = $_.Exception.Message
+} finally {
+    # Whatever happened, the original authentication rules go back and the service is restarted.
+    if (Test-Path $backup) { Move-Item $backup $conf -Force -ErrorAction SilentlyContinue }
+    Restart-Service -Name $Service -Force -ErrorAction SilentlyContinue
+    Set-Content -Path $Result -Value $(if ($script:ok) { 'ok' } else { $script:err }) -Encoding ASCII
+}
+'@
+    [System.IO.File]::WriteAllText($helper, $body, (New-Object System.Text.UTF8Encoding($false)))
+    $argList = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$helper,'-Psql',$psql,'-DataDir',$DataDir,
+                 '-Service',$Service,'-Super',$PgSuper,'-Pass',$NewPass,'-Port',[string]$DbPort,'-Result',$result)
+    if (Test-Elevated) {
+        & powershell @argList | Out-Null
+    } else {
+        Warn "Windows will ask for Administrator rights: changing the local PostgreSQL '$PgSuper' password needs them."
+        try { Start-Process -FilePath 'powershell' -ArgumentList $argList -Verb RunAs -Wait | Out-Null }
+        catch { return $null }
+    }
+    # Verify with the value that was written, so a failed reset is not mistaken for a success.
+    for ($i = 0; $i -lt 10; $i++) {
+        $env:PGPASSWORD = $NewPass
+        $t = Invoke-Native -Exe $psql -ArgList @('-w', '-U', $PgSuper, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', 'select 1')
+        if ($t.Code -eq 0) { Remove-Item $helper -Force -ErrorAction SilentlyContinue; return $NewPass }
+        Start-Sleep -Seconds 2
+    }
+    if (Test-Path $result) { Warn "the password reset did not work: $((Get-Content -Raw $result).Trim())" }
+    Remove-Item $helper -Force -ErrorAction SilentlyContinue
+    return $null
+}
+
 # --- Wizard (environment variables make it unattended) ------------------
 Log "Questions"
 $Company    = Ask "Company name" "My Company" 'COMPANY_NAME'
@@ -113,22 +238,63 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     $r = Invoke-Native -Exe 'winget' -ArgList @('install', '-e', '--id', 'Git.Git', '--accept-source-agreements', '--accept-package-agreements')
     if ($r.Code -ne 0) { Problem "winget could not install Git (exit $($r.Code)). The Odoo download needs Git; install it yourself if it is missing." }
 }
-$psql = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
-         Select-Object -First 1).FullName
-# psql can also live somewhere else (a non-default install folder, a portable install), so PATH
-# is checked too instead of assuming the default prefix.
-if (-not $psql) { $psql = (Get-Command psql -ErrorAction SilentlyContinue).Source }
+$psql = Find-Psql
 if (-not $psql) {
-    Write-Host "PostgreSQL is not installed. winget installs it now; its own installer asks you to choose the password for the '$PgSuper' account. Remember what you type - the next question needs that same password."
-    $r = Invoke-Native -Exe 'winget' -ArgList @('install', '-e', '--id', 'PostgreSQL.PostgreSQL.16', '--accept-source-agreements', '--accept-package-agreements')
-    if ($r.Code -ne 0) { Problem "winget could not install PostgreSQL (exit $($r.Code))." }
+    # curl.exe ships with Windows 10 1803+ and resumes a partial transfer, so the PostgreSQL
+    # download below can be retried without starting over.
+    $curl = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
+    # winget's built-in silent switches run the PostgreSQL installer WITHOUT --superpassword, so the
+    # superuser password is picked by nobody and known by nobody - that is the question users could
+    # not answer. --override replaces those switches, so the account is created with the password
+    # this installer assigns and nothing has to be typed by hand.
+    Write-Host "PostgreSQL is not installed. It is installed now with the '$PgSuper' superuser password set to '$PgSuperPass' (assigned by this installer - there is nothing to type)."
+    $pgArgs = "--mode unattended --unattendedmodeui none --serverport $DbPort"
+    if ($PgSuperPass -match '\s') { $pgArgs += " --superpassword `"$PgSuperPass`"" }
+    else { $pgArgs += " --superpassword $PgSuperPass" }
+    $r = Invoke-Native -Exe 'winget' -ArgList @('install', '-e', '--id', 'PostgreSQL.PostgreSQL.16', '--accept-source-agreements', '--accept-package-agreements', '--override', $pgArgs)
+    if ($r.Code -ne 0) {
+        # winget itself fails often enough (the vendor CDN answers 403 unless the URL carries a
+        # query string, and winget uses the bare URL). Falling back to the same official installer
+        # downloaded directly keeps the install going instead of stopping the user here.
+        Warn "winget could not install PostgreSQL (exit $($r.Code)); downloading the official installer directly. $(Tail $r.Text 200)"
+        $pgSetup = Join-Path $env:TEMP 'postgresql-16-windows-x64.exe'
+        $got = $false
+        foreach ($v in @('16.15-5', '16.15-4', '16.9-3')) {
+            $url = "https://get.enterprisedb.com/postgresql/postgresql-$v-windows-x64.exe?download=1"
+            if ($curl) {
+                $c = Invoke-Native -Exe $curl -ArgList @('-fL', '--retry', '5', '--retry-delay', '5', '-C', '-', '--output', $pgSetup, $url)
+            } else {
+                $c = @{ Code = 1; Text = '' }
+                try { Invoke-WebRequest -Uri $url -OutFile $pgSetup -UseBasicParsing -TimeoutSec 3600; $c = @{ Code = 0; Text = '' } }
+                catch { $c = @{ Code = 1; Text = "$_" } }
+            }
+            if ($c.Code -eq 0 -and (Test-Path $pgSetup) -and (Get-Item $pgSetup).Length -gt 100MB) { $got = $true; break }
+            Log "that version could not be downloaded: $(Tail $c.Text 200)"
+            Remove-Item $pgSetup -Force -ErrorAction SilentlyContinue
+        }
+        if ($got) {
+            $inst = Start-Process -FilePath $pgSetup -ArgumentList @('--mode', 'unattended', '--unattendedmodeui', 'none', '--serverport', $DbPort, '--superpassword', $PgSuperPass) -Wait -PassThru
+            if ($inst.ExitCode -ne 0) { Problem "the PostgreSQL installer finished with exit $($inst.ExitCode)." }
+        } else {
+            Problem "PostgreSQL could not be downloaded (winget and the direct download both failed). Install it yourself from enterprisedb.com and run this installer again - it continues where it stopped."
+        }
+    }
     # A just-installed PostgreSQL is not on this window's PATH yet, so refresh it before looking.
     $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
                [System.Environment]::GetEnvironmentVariable('Path','User')
-    $psql = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
-             Select-Object -First 1).FullName
-    if (-not $psql) { $psql = (Get-Command psql -ErrorAction SilentlyContinue).Source }
+    $psql = Find-Psql
 }
+# Use the port the server really listens on unless the user pinned one with DB_PORT: a PostgreSQL
+# set up earlier may well run on 5433, and talking to the wrong port reports a password error.
+$pgDataDir = Find-PgDataDir $psql
+if (-not $env:DB_PORT) {
+    $confPort = Get-PgConfPort $pgDataDir
+    if ($confPort -and $confPort -ne $DbPort) {
+        Log "PostgreSQL listens on port $confPort (read from postgresql.conf); using it"
+        $DbPort = $confPort
+    }
+}
+$pgService = Find-PgService $pgDataDir
 # Python: use an installed 3.10-3.13 if present, otherwise install 3.12.
 $pyOk = $false
 if (Get-Command py -ErrorAction SilentlyContinue) {
@@ -146,71 +312,94 @@ $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';'
 
 # --- PostgreSQL role ----------------------------------------------------
 Log "Configuring PostgreSQL user '$DbUser'"
-# Nothing the installer asks for here is an Odoo password. The role 'odoo' created for the ERP is
-# a database account on this PC; it is not an Odoo.com account and Odoo Community needs no
-# registration, so there is no Odoo password to remember. The only value requested below is the
-# 'postgres' superuser password that PostgreSQL itself asked for when it was installed on this
-# machine — it proves you are allowed to create database roles here.
+# Nothing here is an Odoo password. The role 'odoo' created for the ERP is a database account on
+# this PC; it is not an Odoo.com account and Odoo Community needs no registration, so there is no
+# Odoo password to remember. The '$PgSuper' superuser password is the one THIS installer assigned
+# when it installed PostgreSQL, so the user is never asked to type a value they cannot know.
 if (-not $psql) {
-    throw "psql was not found, so the '$DbUser' database role cannot be prepared and nothing after this would work. Install PostgreSQL first (for example: winget install -e --id PostgreSQL.PostgreSQL.16), choose a password for the '$PgSuper' account and remember it, then run this installer again - it continues where it stopped."
+    throw "psql was not found, so the '$DbUser' database role cannot be prepared and nothing after this would work. Install PostgreSQL first (for example: winget install -e --id PostgreSQL.PostgreSQL.16) and run this installer again - it continues where it stopped."
 }
 
-# Try the account the whole stack will use. On a fresh machine it does not exist yet, so a
-# failing probe here is normal and must NOT stop the install: this exact line used to kill
-# the whole script (NativeCommandError) before the question below could even be asked.
-# psql exits 0 only when it really connected, so the exit code is the signal we trust.
-$env:PGPASSWORD = $DbPassword
-$probe = Invoke-Native -Exe $psql -ArgList @('-U', $DbUser, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', 'select 1')
+# Try the account the whole stack will use. On a fresh machine it does not exist yet, so a failing
+# probe here is normal and must NOT stop the install. A just-installed server is also still starting
+# up, so the probe is repeated for a while - but a rejected password or a missing database is not a
+# slow start and ends the wait at once. Every psql call uses -w (never prompt for a password): psql
+# would otherwise open its own hidden prompt and sit there forever waiting for a keyboard nobody is
+# watching, which is the very freeze this section must not cause.
+$probe = $null
+for ($i = 0; $i -lt 30; $i++) {
+    $env:PGPASSWORD = $DbPassword
+    $probe = Invoke-Native -Exe $psql -ArgList @('-w', '-U', $DbUser, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', 'select 1')
+    if ($probe.Code -eq 0) { break }
+    if ($probe.Text -match 'authentication failed|no password supplied|does not exist') { break }
+    Start-Sleep -Seconds 2
+}
 if ($probe.Code -eq 0) {
     Log "role '$DbUser' already works"
 } else {
-    # The role is not usable yet, so the '$PgSuper' superuser password is needed: the one that was
-    # typed when PostgreSQL was installed on this machine. Two things used to make this hopeless to
-    # read. First, "$act.Code" inside a double-quoted string does NOT expand the Code property - it
-    # expands the whole object, so the message printed "@{Code=2; Text=...}.Code" instead of "2".
-    # Second, a single wrong answer aborted everything and the user had to start from scratch.
-    # Now it asks again, up to 3 times, and says in plain words what happened. With PG_SUPERPASS
-    # set (unattended run) there is no prompt and only one attempt: retrying the same value twice
-    # cannot turn a wrong password into a right one.
-    $act = $null
-    $maxTries = if ($env:PG_SUPERPASS) { 1 } else { 3 }
-    for ($try = 1; $try -le $maxTries; $try++) {
-        $askLabel = "PostgreSQL $PgSuper superuser password (from the PostgreSQL install, not the Odoo admin password above)"
-        if ($try -gt 1) { $askLabel = "$askLabel (try $try of $maxTries)" }
-        $pgPass = AskSecret $askLabel '' 'PG_SUPERPASS'
-        if ([string]::IsNullOrWhiteSpace($pgPass)) { break }
-        $env:PGPASSWORD = $pgPass
-        # This one query tells us both things at once: whether the '$PgSuper' password works
-        # (exit code) and whether the role is already there (its answer).
-        $act = Invoke-Native -Exe $psql -ArgList @('-U', $PgSuper, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', "select 1 from pg_roles where rolname='$DbUser'")
-        if ($act.Code -eq 0) { break }
-        if ($try -lt $maxTries) {
-            Warn "That is not the '$PgSuper' password (exit $($act.Code)): PostgreSQL answered 'password authentication failed'. It is the password that was chosen when PostgreSQL was installed on this PC - it is not the Odoo admin password you just typed above."
+    # Superuser access is needed to create (or repair) the role. The password is normally the one
+    # this installer assigned, so it is tried automatically - no question is asked. The list also
+    # covers the PostgreSQL installers that ship a default of their own, and an account left without
+    # a password.
+    $supPass = $null
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if ($env:PG_SUPERPASS) { $candidates.Add($env:PG_SUPERPASS) }
+    foreach ($c in @($PgSuperPass, 'postgres', 'password', 'admin', '')) {
+        if (-not $candidates.Contains($c)) { $candidates.Add($c) }
+    }
+    foreach ($c in $candidates) {
+        if ([string]::IsNullOrEmpty($c)) { Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue }
+        else { $env:PGPASSWORD = $c }
+        $t = Invoke-Native -Exe $psql -ArgList @('-w', '-U', $PgSuper, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', 'select 1')
+        if ($t.Code -eq 0) { $supPass = $c; break }
+    }
+    if ($null -eq $supPass) {
+        # PostgreSQL was set up by something else and its password really is unknown: reset it here
+        # instead of stopping the user on a value they do not have.
+        Log "The '$PgSuper' password is not a known one; resetting it to the default of this installer"
+        $supPass = Reset-PgSuperPassword $pgDataDir $pgService $PgSuperPass
+        if ($supPass) { Log "the '$PgSuper' password is now '$supPass'" }
+    }
+    # Last resort, and it never blocks: three tries, and Enter skips the step. A run driven by
+    # environment variables (PG_SUPERPASS set) is unattended and is not prompted at all.
+    if ($null -eq $supPass -and -not $env:PG_SUPERPASS) {
+        for ($try = 1; $try -le 3; $try++) {
+            $askLabel = "PostgreSQL $PgSuper superuser password (press Enter to skip this step)"
+            if ($try -gt 1) { $askLabel = "$askLabel (try $try of 3)" }
+            try { $pgPass = AskSecret $askLabel '' $null } catch { break }
+            if ([string]::IsNullOrWhiteSpace($pgPass)) { break }
+            $env:PGPASSWORD = $pgPass
+            $t = Invoke-Native -Exe $psql -ArgList @('-w', '-U', $PgSuper, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', 'select 1')
+            if ($t.Code -eq 0) { $supPass = $pgPass; break }
+            if ($try -lt 3) { Warn "That is not the '$PgSuper' password (exit $($t.Code)). Press Enter to skip: the install continues and this step can be repeated later." }
         }
     }
-    if ($null -eq $act) {
-        throw "No '$PgSuper' password was given, so the '$DbUser' role cannot be prepared. Run the installer again and type the password for '$PgSuper' (the one chosen when PostgreSQL was installed), or have someone create the role for you with: CREATE ROLE $DbUser LOGIN SUPERUSER PASSWORD '$DbPassword';"
-    }
-    if ($act.Code -ne 0) {
-        throw "Cannot connect to PostgreSQL as '$PgSuper' (exit $($act.Code)). Last answer from the database: $(Tail $act.Text 300). Type the correct '$PgSuper' password and run the installer again - it continues where it stopped. If nobody knows that password it can be reset: stop the PostgreSQL Windows service, edit its pg_hba.conf so that connections from 127.0.0.1 use 'trust' instead of 'scram-sha-256', start the service again, connect with 'psql -U $PgSuper -h 127.0.0.1' (no password is asked then), run ALTER USER $PgSuper PASSWORD 'the password you want';, then put pg_hba.conf back to 'scram-sha-256' and restart the service."
-    }
-    # Create the role when it is missing, repair the password when it is already there with
-    # a different one. Both cases used to break the Odoo database step some minutes later.
-    # The answer is matched, not compared for equality: any noise ahead of the digit still means
-    # "the role exists", and picking CREATE there would fail with "role already exists".
-    if ($act.Text -match '^\s*1\s*$') { $verb = 'ALTER' } else { $verb = 'CREATE' }
-    $done = Invoke-Native -Exe $psql -ArgList @('-U', $PgSuper, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-c', "$verb ROLE $DbUser LOGIN SUPERUSER PASSWORD '$DbPassword'")
-    if ($done.Code -ne 0) {
-        throw "Could not ${verb} the database role '$DbUser' (exit $($done.Code)): $(Tail $done.Text 300)"
-    }
-    # Verify with the credentials the rest of the stack actually uses, so a wrong password is
-    # reported here instead of minutes later, in the middle of the Odoo setup.
-    $env:PGPASSWORD = $DbPassword
-    $check = Invoke-Native -Exe $psql -ArgList @('-U', $DbUser, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', 'select 1')
-    if ($check.Code -eq 0) {
-        Log "role '$DbUser' ready"
+    if ($null -eq $supPass) {
+        Problem "The '$PgSuper' superuser password of the local PostgreSQL could not be determined, so the '$DbUser' role was not created and the Odoo database step will fail. Nothing was changed: run install.bat as Administrator (the password is then reset automatically) or set PG_SUPERPASS, and run it again - it continues where it stopped."
     } else {
-        throw "The role '$DbUser' still cannot connect to the database ($(Tail $check.Text 200)). Everything after this needs that role, so the install stops here. Check the password and run the installer again."
+        $env:PGPASSWORD = $supPass
+        # This one query tells us both things at once: whether the superuser password works (exit
+        # code) and whether the role is already there (its answer).
+        $act = Invoke-Native -Exe $psql -ArgList @('-w', '-U', $PgSuper, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', "select 1 from pg_roles where rolname='$DbUser'")
+        if ($act.Code -ne 0) {
+            Problem "Cannot connect to PostgreSQL as '$PgSuper' (exit $($act.Code)). Last answer from the database: $(Tail $act.Text 200)"
+        } else {
+            # Create the role when it is missing, repair the password when it is already there with
+            # a different one. The answer is matched, not compared for equality: any noise ahead of
+            # the digit still means "the role exists", and CREATE would fail with "role already exists".
+            if ($act.Text -match '^\s*1\s*$') { $verb = 'ALTER' } else { $verb = 'CREATE' }
+            $done = Invoke-Native -Exe $psql -ArgList @('-w', '-U', $PgSuper, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-c', "$verb ROLE $DbUser LOGIN SUPERUSER PASSWORD '$DbPassword'")
+            if ($done.Code -ne 0) {
+                Problem "Could not ${verb} the database role '$DbUser' (exit $($done.Code)): $(Tail $done.Text 300)"
+            } else {
+                # Verify with the credentials the rest of the stack actually uses, so a wrong
+                # password is reported here instead of minutes later, in the Odoo setup.
+                $env:PGPASSWORD = $DbPassword
+                $check = Invoke-Native -Exe $psql -ArgList @('-w', '-U', $DbUser, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', 'select 1')
+                if ($check.Code -eq 0) { Log "role '$DbUser' ready" }
+                else { Problem "The role '$DbUser' cannot connect with its password ($(Tail $check.Text 200)), so Odoo will not be able to use the database." }
+            }
+        }
     }
 }
 Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
@@ -489,6 +678,7 @@ Write-Host "    Then type a request such as 'list the customers'."
 Write-Host ''
 Write-Host "  Odoo URL:       http://localhost:$OdooPort"
 Write-Host "  Odoo login:     $AdminEmail / $AdminPass   (local to this PC - no Odoo account needed)"
+Write-Host "  PostgreSQL:     superuser '$PgSuper' password '$PgSuperPass' on port $DbPort (set by this installer)"
 Write-Host "  Install root:   $InstallRoot"
 Write-Host "  AgentBridge:    $AbDir"
 Write-Host "  Firewall:       TCP $OdooPort open"

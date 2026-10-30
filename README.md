@@ -96,6 +96,12 @@ the host.
 
 ## One-command installer (whole local stack)
 
+**The easy way to install OdooTool.** You do not need .NET, Git, a Python environment or any
+manual configuration: download one file, run it, and the whole stack is ready. The installer at
+<https://github.com/Graphene-Lab/OdooTool/releases/latest> does everything by itself and only asks
+for the few things nobody can guess for you (your company name, the admin login, the PostgreSQL
+password when it is needed and which AI provider to use) — press Enter to accept its suggestions.
+
 If you want the whole ecosystem ready on your own machine — **AgentBridge + OdooTool + Odoo** —
 use the installer in the `installer/` folder. It sets everything up in one run and asks a few
 simple questions (company name, admin email and password, the PostgreSQL `postgres` superuser
@@ -121,6 +127,15 @@ window at `http://localhost:8069`.
 
 The installer downloads the public AgentBridge release with `curl` (built into Windows 10+), so no
 GitHub sign-in is needed.
+
+### Free support, 24/7
+
+Support is free, any day and any hour: if the installer stops, if Odoo does not come up, or if the
+assistant does something you did not expect, just open an issue at
+<https://github.com/Graphene-Lab/OdooTool/issues> and describe what happened (pasting the
+installer's output is enough). There is no paid support tier, no account to create and no ticket
+to open. The same applies to the CAD side of the ecosystem,
+[FreeCADTool](https://github.com/Graphene-Lab/FreeCADTool/issues).
 
 ### Which password does the installer ask for?
 

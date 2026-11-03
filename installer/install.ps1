@@ -437,10 +437,14 @@ if (-not (Test-Path $py)) {
 }
 $up = Invoke-Native -Exe $py -ArgList @('-m', 'pip', 'install', '--upgrade', 'pip')
 if ($up.Code -ne 0) { Warn "pip upgrade finished with exit $($up.Code) (this is often only a warning)." }
-# python-ldap has no Windows wheel and needs OpenLDAP headers; LDAP auth is optional in
-# Odoo, so exclude it — otherwise pip fails on a plain Windows machine.
+# The two optional, build-heavy libraries below need native headers a plain Windows machine does
+# not have: OpenLDAP for python-ldap (LDAP logins) and freetype/cairo for reportlab's
+# rl-renderPM (image-based PDF rendering). Neither ships a prebuilt wheel for every Python, so pip
+# aborts trying to compile it, and that failure used to cascade into the database step. Both are
+# optional in Odoo and are not needed for the data operations this tool performs, so they are
+# skipped on Windows. reportlab's pure-Python core is kept so the database still builds.
 $reqWin = Get-Content (Join-Path $OdooDir 'requirements.txt') |
-          Where-Object { $_ -notmatch '^\s*python-ldap' }
+          Where-Object { $_ -notmatch '^\s*(?:python-ldap|rl-renderPM)' }
 $reqWin | Set-Content (Join-Path $InstallRoot 'requirements-win.txt') -Encoding ASCII
 $rp = Invoke-Native -Exe $py -ArgList @('-m', 'pip', 'install', '-r', (Join-Path $InstallRoot 'requirements-win.txt'))
 if ($rp.Code -ne 0) { Problem "pip install finished with exit $($rp.Code); last messages: $(Tail $rp.Text 400)" }

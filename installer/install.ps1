@@ -295,7 +295,12 @@ if (-not $env:DB_PORT) {
     }
 }
 $pgService = Find-PgService $pgDataDir
-# Python: use an installed 3.10-3.13 if present, otherwise install 3.12.
+# Python: use an installed 3.10-3.13 if present and working, otherwise install 3.12.
+# Detecting Python only by the presence of the 'py' launcher or a 'python' command is not enough:
+# on modern Windows the 'python' entry on the PATH is very often a Microsoft Store execution alias
+# whose registry shim exists even when no Python is actually installed, so running it prints
+# "Python not found ... Microsoft Store" and exits 9009. Before deciding Python must be installed
+# we therefore actually run it; if it does not run, winget installs a real copy.
 $pyOk = $false
 if (Get-Command py -ErrorAction SilentlyContinue) {
     foreach ($v in @('3.12','3.11','3.13','3.10')) {
@@ -303,9 +308,12 @@ if (Get-Command py -ErrorAction SilentlyContinue) {
         if ($p.Code -eq 0) { $pyOk = $true; break }
     }
 }
-if (-not $pyOk -and -not (Get-Command python -ErrorAction SilentlyContinue)) {
-    $r = Invoke-Native -Exe 'winget' -ArgList @('install', '-e', '--id', 'Python.Python.3.12', '--accept-source-agreements', '--accept-package-agreements')
-    if ($r.Code -ne 0) { Problem "winget could not install Python (exit $($r.Code))." }
+if (-not $pyOk) {
+    $pyProbe = Invoke-Native -Exe 'python' -ArgList @('--version')
+    if ($pyProbe.Code -ne 0) {
+        $r = Invoke-Native -Exe 'winget' -ArgList @('install', '-e', '--id', 'Python.Python.3.12', '--accept-source-agreements', '--accept-package-agreements')
+        if ($r.Code -ne 0) { Problem "winget could not install Python (exit $($r.Code))." }
+    }
 }
 $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
             [System.Environment]::GetEnvironmentVariable('Path','User')
@@ -433,7 +441,7 @@ if (Test-Path $py) {
 }
 $py = Join-Path $venvDir 'Scripts\python.exe'
 if (-not (Test-Path $py)) {
-    throw "No usable Python was found, so Odoo cannot be installed. Install Python 3.10, 3.11, 3.12 or 3.13 (check 'py' works in a command prompt) and run the installer again."
+    throw "No usable Python was found, so Odoo cannot be installed. On Windows 11 the 'python' on your PATH is often a Microsoft Store entry that opens the store instead of running Python (it exits 9009); install real Python 3.10-3.13 from python.org, confirm 'py' works in a command prompt, then run install.bat again."
 }
 $up = Invoke-Native -Exe $py -ArgList @('-m', 'pip', 'install', '--upgrade', 'pip')
 if ($up.Code -ne 0) { Warn "pip upgrade finished with exit $($up.Code) (this is often only a warning)." }

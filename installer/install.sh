@@ -8,13 +8,14 @@
 #   3. Installs Odoo 20 Community and creates a database with the base modules.
 #   4. Downloads AgentBridge and installs the OdooTool plugin (activated by default).
 #   5. Configures OdooTool with the Odoo address and an API key.
-#   6. Starts Odoo, opens the Odoo 20 first-steps page in the default browser and opens the
-#      AgentBridge assistant.
+#   6. Starts Odoo, opens the Odoo 20 first-steps page in the default browser and leaves Odoo
+#      running with the assistant installed and ready to start from the icon.
 #
 # INSTALLER CONTRACT - do not change without reading INSTALLER-CONTRACT.md.
-# The "AI Odoo" launcher must always start BOTH Odoo and AgentBridge (with the OdooTool
-# plugin). It must never open only Odoo and must never launch OfficeManager, the multi-agent
-# view. Shared rationale: AgentBridge/docs-dev/INSTALLER-CONTRACT.md.
+# The "AI Odoo" launcher must start Odoo and AgentBridge (with the OdooTool plugin) and open
+# the assistant chat at http://localhost:5290/OfficeManager. It must never open only Odoo and
+# must never open Odoo's login page instead of the chat. Shared rationale:
+# AgentBridge/docs-dev/INSTALLER-CONTRACT.md.
 #
 # Run:  bash install.sh
 #
@@ -272,8 +273,9 @@ open_firewall() {
   fi
 }
 
-# Launcher contract: start Odoo, open it in the default browser, then start AgentBridge with
-# the OdooTool plugin already in Tools/. Do not reduce this to an Odoo-only shortcut.
+# Launcher contract: start Odoo, start AgentBridge (with the OdooTool plugin already in
+# Tools/) if the chat is not answering, wait for the chat and open it in the default browser.
+# Do not reduce this to an Odoo-only shortcut or open Odoo's login page instead of the chat.
 create_launcher() {
   log "Creating the one-click launcher"
   # Header: written now, storing the real values as safe bash literals with printf %q, so a path
@@ -290,25 +292,25 @@ DBPASS=$(printf '%q' "$DB_PASSWORD")
 EOF
   # Body: kept literal; it only uses the variables defined just above.
   cat >> "$INSTALL_ROOT/start.sh" <<'LAUNCHER'
-if ! curl -sf -o /dev/null "http://localhost:$PORT"; then
+if ! curl -sf -o /dev/null "http://localhost:$PORT/web/login"; then
   setsid "$ROOT/venv/bin/python" "$ROOT/odoo/odoo-bin" -d odoo_agent --db_host=127.0.0.1 --db_port "$DBPORT" \
     --db_user "$DBUSER" --db_password "$DBPASS" --addons-path="$ROOT/odoo/addons" \
     --http-port "$PORT" --http-interface=0.0.0.0 > "$ROOT/odoo.log" 2>&1 < /dev/null &
-  for i in $(seq 1 40); do curl -sf -o /dev/null "http://localhost:$PORT" && break; sleep 2; done
+  for i in $(seq 1 40); do curl -sf -o /dev/null "http://localhost:$PORT/web/login" && break; sleep 2; done
 fi
 # Open the browser to the assistant's own chat (the AI office), NOT to Odoo's web login:
 # localhost:$PORT is the ERP's back-end login page, and opening it is what made the launcher
 # show a login screen instead of the assistant. The office chat is served by the assistant on
-# port $OFFICE_PORT. Wait for it before opening, so the window shows the assistant instead of a
-# "cannot reach" page.
+# port $OFFICE_PORT. Start the assistant first (only if the chat is not already answering),
+# then wait for it, then open the window.
+if ! curl -sf -o /dev/null "$OFFICE_URL" && [ -x "$ROOT/agentbridge/agent" ]; then
+  setsid "$ROOT/agentbridge/agent" > "$ROOT/agentbridge/agent.log" 2>&1 < /dev/null &
+fi
 for i in $(seq 1 40); do curl -sf -o /dev/null "$OFFICE_URL" && break; sleep 3; done
 if curl -sf -o /dev/null "$OFFICE_URL"; then
   xdg-open "$OFFICE_URL" >/dev/null 2>&1 &
 else
   echo "The assistant did not start on port $OFFICE_PORT. Run '$ROOT/agentbridge/agent' to bring it up, then double-click the 'AI Odoo' icon again."
-fi
-if [ -x "$ROOT/agentbridge/agent" ]; then
-  setsid "$ROOT/agentbridge/agent" > "$ROOT/agentbridge/agent.log" 2>&1 < /dev/null &
 fi
 LAUNCHER
   chmod +x "$INSTALL_ROOT/start.sh"
@@ -362,14 +364,14 @@ main() {
   log "Done."
   echo "  HOW TO START:"
   echo "    Double-click the 'AI Odoo' icon (Applications menu or Desktop)."
-  echo "    It starts Odoo, opens it in the browser and launches the assistant."
-  echo "    Then type a request such as 'list the customers'."
+  echo "    It opens the assistant in the browser: that is where you talk to it."
+  echo "    Type a request there such as 'list the customers'."
   echo "    The database and the admin user are already created: do not run the Odoo database manager."
   echo "    If it appears, the install did not complete: run install.sh again."
   echo "    Odoo 20 first steps: https://www.odoo.com/documentation/20.0/applications.html"
   echo
-  echo "  Odoo URL:       http://localhost:$ODOO_PORT"
-  echo "  Odoo login:     $ADMIN_EMAIL / $ADMIN_PASS   (local to this PC - no Odoo account needed)"
+  echo "  Assistant (talk to it here):  http://localhost:5290/OfficeManager"
+  echo "  Odoo (the data behind it):    http://localhost:$ODOO_PORT   login $ADMIN_EMAIL / $ADMIN_PASS"
   echo "  Install root:   $INSTALL_ROOT"
   echo "  AgentBridge:    $AB_DIR"
   echo

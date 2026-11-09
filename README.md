@@ -82,13 +82,14 @@ bash OdooTool/installer/install.sh
 The installer installs PostgreSQL and the Python packages Odoo needs, installs Odoo 20 Community,
 creates the database with the base modules, downloads the public AgentBridge release, installs and
 enables the OdooTool plugin, writes the Odoo address and an API key into the plugin configuration,
-and starts Odoo and the assistant.
+and starts Odoo.
 
-When it finishes, open the assistant and ask something like *"list the customers"*. The assistant
-opens in the browser at `http://localhost:5290/OfficeManager` — that chat window is where you talk
-to it. It uses OdooTool to read — and, when you ask for it, change — the data in Odoo. You can watch
-the result in the Odoo window at `http://localhost:8069`. The installer prints the generated admin login
-and password at the end: they are created locally, not registered anywhere.
+When it finishes, double-click the **AI Odoo** icon (Desktop or application menu). It starts
+AgentBridge and opens the assistant in the browser at `http://localhost:5290/OfficeManager` — that
+chat window is where you talk to it. Ask something like *"list the customers"*: it uses OdooTool to
+read — and, when you ask for it, change — the data in Odoo. You can watch the result in the Odoo
+window at `http://localhost:8069`. The installer prints the generated admin login and password at
+the end: they are created locally, not registered anywhere.
 
 The installer downloads the public AgentBridge release with `curl` (built into Windows 10+), so no
 GitHub sign-in is needed. Re-running it is safe: it continues where it stopped and reuses what is
@@ -199,9 +200,11 @@ method for the LLM with a snake_case name.
 ## Installer contract (contributors)
 
 The installer's **AI Odoo** icon is a deliberate design decision: it must start **both** Odoo and
-AgentBridge with the OdooTool plugin already active, and it must never open Odoo alone or launch
-OfficeManager (the multi-agent view). The reason is the single-agent, privacy-first local
-deployment: on a local GPU, parallel agents share the same VRAM instead of adding compute.
+AgentBridge with the OdooTool plugin already active, and open the **assistant chat** at
+`http://localhost:5290/OfficeManager` — never Odoo alone, and never Odoo's login page instead of
+the chat. The chat is served by AgentBridge and in the standard installation drives one agent.
+The reason is the single-agent, privacy-first local deployment: on a local GPU, parallel agents
+share the same VRAM instead of adding compute.
 
 At the end of a successful installation the installer opens the Odoo 20 first-steps page in
 the default browser (and prints the URL), so a new user is not left in front of a working

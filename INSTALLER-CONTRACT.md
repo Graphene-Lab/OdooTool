@@ -6,24 +6,28 @@
 
 ## The invariant
 
-The **AI Odoo** icon on the Desktop and in the application menu must always start **both**
-parts of the stack:
+The **AI Odoo** icon on the Desktop and in the application menu must always start the whole
+stack and open the assistant:
 
 1. **Odoo** (if it is not already running), waiting until it answers;
 2. **AgentBridge** with the **OdooTool plugin already active** in `Tools/OdooTool/`;
-3. the **Odoo UI** opened in the system default browser at `http://localhost:8069`.
+3. the **assistant chat** at `http://localhost:5290/OfficeManager` in the system default
+   browser — that is where the user types the prompt.
 
-The user must land in a working state: Odoo open beside the assistant, ready for a prompt such
-as *"list the customers"*. The agent acts on Odoo through OdooTool.
+The user must land in a working state: the assistant chat open, Odoo already running behind
+it, ready for a prompt such as *"list the customers"*. The agent acts on Odoo through
+OdooTool. The final summary prints the Odoo URL and login, so the user can open the ERP UI
+when they want to watch the result.
 
-The icon must **never** open Odoo alone, and must **never** launch **OfficeManager** (the
-multi-agent view served by AgentBridge at `/OfficeManager`).
+The icon must **never** open Odoo alone, and must **never** open Odoo's login page instead of
+the assistant chat (the regression behind issue #7).
 
 ## Why — the architecture decision
 
-AgentBridge is the base program: it hosts the agent engine and a chat/terminal interface for
-piloting **one** agent. OfficeManager is a different surface: a web view for piloting **many**
-agent and subagent instances at once.
+AgentBridge is the base program: it hosts the agent engine and the chat interface for
+piloting **one** agent. The browser chat at `/OfficeManager` is served by AgentBridge and is
+the window the launcher opens; the name is historical, because the same page also carries the
+optional multi-agent view. In the standard installation it drives one agent.
 
 AgentBridge is privacy-first, so the intended deployment is a local LLM on the user's own
 machine. Local hardware is fixed: one GPU, one VRAM budget. Two or more agents share that
@@ -54,7 +58,7 @@ rationale and the contract shared by all tool installers are in
 | Admin credentials | generated locally, printed at the end | generated locally, printed at the end |
 | API key | generated and written to `odoo.json` | same |
 | Launcher | `start.ps1` + **AI Odoo** shortcuts (Desktop + Start Menu) | `start.sh` + **ai-odoo.desktop** (`~/.local/share/applications` + `~/Desktop`) |
-| Launcher behaviour | start Odoo, open `http://localhost:8069`, start `agentbridge\agent.exe` | start Odoo, `xdg-open` the URL, start `agentbridge/agent` |
+| Launcher behaviour | start Odoo, start `agentbridge\agent.exe` if needed, wait for and open `http://localhost:5290/OfficeManager` | start Odoo, start `agentbridge/agent` detached if needed, wait for and `xdg-open` the chat URL |
 | First steps | at the end of a successful run, open the Odoo 20 docs page in the default browser | same, via `xdg-open` |
 
 Re-running the installer is safe: it reuses AgentBridge, the virtualenv, the API key and the
@@ -65,20 +69,24 @@ existing configuration.
 - **Do not replace the launcher with an Odoo-only shortcut.** A user may ask for "just Odoo";
   the answer is a separate optional shortcut or the manual command printed at the end, not a
   change to the standard icon.
-- **Do not launch OfficeManager from the standard icon.** OfficeManager is the multi-agent
-  view; the standard installation is single-agent. It remains available inside AgentBridge at
-  `/OfficeManager` for users who want it.
+- **Do not point the launcher at Odoo's login page.** `http://localhost:8069` is the ERP
+  back-end login; opening it instead of the assistant chat is issue #7. The chat is the first
+  screen, the ERP is the data behind it.
 - **Do not remove the AgentBridge launch from the launcher**, and do not make the OdooTool
   plugin optional or inactive by default.
+- **Do not configure a multi-agent workload by default.** The standard installation is
+  single-agent; the multi-agent view at `/OfficeManager` remains available but is not the
+  default configuration.
 - **Do not reintroduce a manual first-run step** (for example the Odoo database manager). The
   installer creates the database, the admin user and the API key itself.
 - **Do not remove the idempotent re-run behaviour** (keep the existing API key, providers and
   database on a second run).
+- **Do not wait for the assistant chat before starting AgentBridge.** Start the assistant
+  first (only if the chat is not already answering), then wait, then open the browser.
 
-If a user reports that "the icon starts OfficeManager", verify what the icon actually launches:
-the standard launcher starts **AgentBridge** (`agent.exe` / `agent`) with the OdooTool plugin,
-not OfficeManager. If the report is about a different installer, point it to the contract
-above.
+If a user reports that the icon opens only Odoo (or Odoo's login), that is a regression: check
+that the launcher starts `agent.exe` / `agent` and opens the chat URL. If the report is about a
+different installer, point it to the contract above.
 
 ## First run
 
@@ -101,7 +109,10 @@ for the installed version is printed at the end:
 ## Checklist for a change to `installer/`
 
 - [ ] The **AI Odoo** launcher still starts Odoo **and** AgentBridge with the plugin active.
-- [ ] The launcher still opens the Odoo UI in the default browser.
+- [ ] The launcher still opens the assistant chat (`http://localhost:5290/OfficeManager`) in
+      the default browser, not Odoo's login page.
+- [ ] The final message still prints the Odoo URL and login, so the ERP UI can be opened to
+      watch the result.
 - [ ] The icon is still created in the application menu/launcher **and** on the Desktop.
 - [ ] The OdooTool plugin is still installed in `Tools/OdooTool/` and active by default.
 - [ ] The database, admin credentials and API key are still created automatically.

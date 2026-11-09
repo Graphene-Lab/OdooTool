@@ -7,12 +7,14 @@
 #   4. Downloads AgentBridge and installs the OdooTool plugin (activated by default).
 #   5. Configures OdooTool with the Odoo address and an API key.
 #   6. Opens the firewall port, starts Odoo, opens the Odoo 20 first-steps page in the default
-#      browser and leaves the assistant ready.
+#      browser and leaves Odoo running with the assistant installed and ready to start from
+#      the icon.
 #
 # INSTALLER CONTRACT - do not change without reading INSTALLER-CONTRACT.md.
-# The "AI Odoo" launcher must always start BOTH Odoo and AgentBridge (with the OdooTool
-# plugin). It must never open only Odoo and must never launch OfficeManager, the multi-agent
-# view. Shared rationale: AgentBridge/docs-dev/INSTALLER-CONTRACT.md.
+# The "AI Odoo" launcher must start Odoo and AgentBridge (with the OdooTool plugin) and open
+# the assistant chat at http://localhost:5290/OfficeManager. It must never open only Odoo and
+# must never open Odoo's login page instead of the chat. Shared rationale:
+# AgentBridge/docs-dev/INSTALLER-CONTRACT.md.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
@@ -632,8 +634,9 @@ for ($i = 0; $i -lt 30; $i++) {
 if (-not $up) { Problem "Odoo did not answer on port $OdooPort after 60s; check $InstallRoot\odoo.log." }
 
 # --- One-click launcher + shortcut -------------------------------------
-# Launcher contract: start Odoo, open it in the default browser, then start AgentBridge with
-# the OdooTool plugin already in Tools/. Do not reduce this to an Odoo-only shortcut.
+# Launcher contract: start Odoo, start AgentBridge (with the OdooTool plugin already in
+# Tools/) if the chat is not answering, wait for the chat and open it in the default browser.
+# Do not reduce this to an Odoo-only shortcut or open Odoo's login page instead of the chat.
 Log "Creating the one-click launcher and shortcuts"
 $launcherTemplate = @'
 $ErrorActionPreference = 'Continue'
@@ -660,8 +663,12 @@ if (-not (Test-Odoo)) {
 # Open the browser to the assistant's own chat (the AI office), NOT to Odoo's web login:
 # localhost:8069 is the ERP's back-end login page, and opening it is what made the shortcut
 # show a login screen instead of the assistant from the second launch on. The office chat is
-# served by the assistant on port 5290 and ships in the AgentBridge release. Wait for it before
-# opening, so the window shows the assistant instead of a "cannot reach" page.
+# served by the assistant on port 5290 and ships in the AgentBridge release. Start the
+# assistant first (only if the chat is not already answering), then wait for it, then open
+# the window, so it shows the assistant instead of a "cannot reach" page.
+if (-not (Test-Assistant) -and (Test-Path $ab)) {
+    Start-Process -FilePath $ab -WorkingDirectory (Join-Path $root 'agentbridge')
+}
 for ($i = 0; $i -lt 40; $i++) { if (Test-Assistant) { break }; Start-Sleep -Seconds 3 }
 if (Test-Assistant) {
     Start-Process $officeUrl
@@ -669,7 +676,6 @@ if (Test-Assistant) {
     Write-Host "The assistant did not start on port $officePort. Run 'agent.exe' in the folder"
     Write-Host "$root\agentbridge to bring it up, then double-click the 'AI Odoo' icon again."
 }
-if (Test-Path $ab) { Start-Process -FilePath $ab -WorkingDirectory (Join-Path $root 'agentbridge') }
 '@
 $launcherPath = Join-Path $InstallRoot 'start.ps1'
 # Put the real role name and password in, quoted so nothing can break or be injected when they

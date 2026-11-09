@@ -6,7 +6,8 @@
 #   3. Installs Odoo Community and creates a database with the base modules.
 #   4. Downloads AgentBridge and installs the OdooTool plugin (activated by default).
 #   5. Configures OdooTool with the Odoo address and an API key.
-#   6. Opens the firewall port, starts Odoo and leaves the assistant ready.
+#   6. Opens the firewall port, starts Odoo, opens the Odoo 20 first-steps page in the default
+#      browser and leaves the assistant ready.
 #
 # INSTALLER CONTRACT - do not change without reading INSTALLER-CONTRACT.md.
 # The "AI Odoo" launcher must always start BOTH Odoo and AgentBridge (with the OdooTool
@@ -722,3 +723,15 @@ Write-Host ''
 Write-Host "  Manual start, if you ever need it:"
 Write-Host "    Odoo:      $py `"$OdooDir\odoo-bin`" -d odoo_agent --db_port $DbPort"
 Write-Host "    Assistant: $AbDir\agent.exe"
+
+# Users reached a working stack and still did not know what to do next, so put the vendor's
+# first steps in front of them, after the credentials above have been printed. The URL is
+# printed too, for headless runs and for users who close the tab.
+if ($Problems.Count -eq 0) {
+    try {
+        Start-Process 'https://www.odoo.com/documentation/20.0/applications.html'
+        Write-Host "    (Opened the Odoo 20 first-steps page in your default browser.)"
+    } catch {
+        Write-Host "    (Could not open the browser - use the URL above.)" -ForegroundColor Yellow
+    }
+}

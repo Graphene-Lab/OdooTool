@@ -8,7 +8,8 @@
 #   3. Installs Odoo 20 Community and creates a database with the base modules.
 #   4. Downloads AgentBridge and installs the OdooTool plugin (activated by default).
 #   5. Configures OdooTool with the Odoo address and an API key.
-#   6. Starts Odoo and opens the AgentBridge assistant.
+#   6. Starts Odoo, opens the Odoo 20 first-steps page in the default browser and opens the
+#      AgentBridge assistant.
 #
 # INSTALLER CONTRACT - do not change without reading INSTALLER-CONTRACT.md.
 # The "AI Odoo" launcher must always start BOTH Odoo and AgentBridge (with the OdooTool
@@ -348,8 +349,12 @@ main() {
   configure_agentbridge
   start_odoo
   # Wait until Odoo answers, so "Done" is only printed for a working stack.
-  for i in $(seq 1 30); do curl -sf -o /dev/null "http://localhost:$ODOO_PORT/web/login" && break; sleep 2; done
-  curl -sf -o /dev/null "http://localhost:$ODOO_PORT/web/login" \
+  local odoo_up=0
+  for i in $(seq 1 30); do
+    curl -sf -o /dev/null "http://localhost:$ODOO_PORT/web/login" && { odoo_up=1; break; }
+    sleep 2
+  done
+  [ "$odoo_up" -eq 1 ] \
     || warn "Odoo did not answer on port $ODOO_PORT after 60s; check $INSTALL_ROOT/odoo.log."
   open_firewall
   create_launcher
@@ -371,6 +376,13 @@ main() {
   echo "  Manual start, if you ever need it:"
   echo "    Odoo:      $INSTALL_ROOT/venv/bin/python $INSTALL_ROOT/odoo/odoo-bin -d odoo_agent --db_port $DB_PORT"
   echo "    Assistant: $INSTALL_ROOT/agentbridge/agent"
+
+  # Users reached a working stack and still did not know what to do next, so put the vendor's
+  # first steps in front of them, after the credentials above have been printed. The URL is
+  # printed too, for headless runs and for users who close the tab.
+  if [ "$odoo_up" -eq 1 ] && command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "https://www.odoo.com/documentation/20.0/applications.html" >/dev/null 2>&1 &
+  fi
 }
 
 main "$@"

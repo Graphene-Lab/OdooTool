@@ -203,6 +203,10 @@ AgentBridge with the OdooTool plugin already active, and it must never open Odoo
 OfficeManager (the multi-agent view). The reason is the single-agent, privacy-first local
 deployment: on a local GPU, parallel agents share the same VRAM instead of adding compute.
 
+At the end of a successful installation the installer opens the Odoo 20 first-steps page in
+the default browser (and prints the URL), so a new user is not left in front of a working
+stack without knowing what to do next.
+
 Before changing anything in `installer/`, read **[INSTALLER-CONTRACT.md](INSTALLER-CONTRACT.md)**.
 The shared decision record and rationale are in
 [AgentBridge/docs-dev/INSTALLER-CONTRACT.md](https://github.com/Graphene-Lab/AgentBridge/blob/master/docs-dev/INSTALLER-CONTRACT.md).

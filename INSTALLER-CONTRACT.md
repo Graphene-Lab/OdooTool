@@ -55,6 +55,7 @@ rationale and the contract shared by all tool installers are in
 | API key | generated and written to `odoo.json` | same |
 | Launcher | `start.ps1` + **AI Odoo** shortcuts (Desktop + Start Menu) | `start.sh` + **ai-odoo.desktop** (`~/.local/share/applications` + `~/Desktop`) |
 | Launcher behaviour | start Odoo, open `http://localhost:8069`, start `agentbridge\agent.exe` | start Odoo, `xdg-open` the URL, start `agentbridge/agent` |
+| First steps | at the end of a successful run, open the Odoo 20 docs page in the default browser | same, via `xdg-open` |
 
 Re-running the installer is safe: it reuses AgentBridge, the virtualenv, the API key and the
 existing configuration.
@@ -86,7 +87,9 @@ The installer must leave a working stack, not a setup screen:
 - the `odoo_agent` database is created with the `base` modules;
 - the admin login/password are generated and printed;
 - the API key is created and written to `agentbridge/PersistentData/odoo.json`;
-- Odoo is started and the installer waits until `/web/login` answers.
+- Odoo is started and the installer waits until `/web/login` answers;
+- the Odoo 20 first-steps page is opened in the default browser at the end of a successful
+  run (the URL is printed too, for headless runs).
 
 If the user sees the Odoo database manager, the installation did not complete: re-run
 `install.bat` / `install.sh` (it resumes) and read the final summary. The vendor documentation
@@ -103,8 +106,8 @@ for the installed version is printed at the end:
 - [ ] The OdooTool plugin is still installed in `Tools/OdooTool/` and active by default.
 - [ ] The database, admin credentials and API key are still created automatically.
 - [ ] Re-running the installer still preserves existing configuration and credentials.
-- [ ] The final message still explains the one-click flow, the credentials and the manual
-	  commands.
+- [ ] A successful run still opens the Odoo 20 first-steps page in the default browser.
+- [ ] The final message still explains the one-click flow, the credentials and the manual commands.
 - [ ] The header comment in `install.ps1` / `install.sh` still points to this contract.
 
 ## Where the rule is enforced

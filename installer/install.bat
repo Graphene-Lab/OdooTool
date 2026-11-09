@@ -5,7 +5,8 @@ REM The window stays open at the end so the user can read the messages.
 REM
 REM INSTALLER CONTRACT - see INSTALLER-CONTRACT.md. The "AI Odoo" icon created by the
 REM installer must start Odoo AND AgentBridge with the OdooTool plugin; never Odoo alone
-REM and never OfficeManager (the multi-agent view).
+REM and never OfficeManager (the multi-agent view). A successful run ends by opening the
+REM Odoo 20 first-steps page in the default browser.
 setlocal
 title OdooTool installer
 

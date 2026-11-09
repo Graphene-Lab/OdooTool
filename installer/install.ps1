@@ -634,10 +634,13 @@ $py = Join-Path $root 'venv\Scripts\python.exe'
 $odoo = Join-Path $root 'odoo\odoo-bin'
 $ab = Join-Path $root 'agentbridge\agent.exe'
 $port = 8069
+$officePort = 5290
+$officeUrl = "http://localhost:$officePort/OfficeManager"
 $dbPort = __DB_PORT__
 $dbUser = __DB_USER__
 $dbPass = __DB_PASS__
 function Test-Odoo { (Test-NetConnection -ComputerName 127.0.0.1 -Port $port -WarningAction SilentlyContinue).TcpTestSucceeded }
+function Test-Assistant { try { (Invoke-WebRequest $officeUrl -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200 } catch { $false } }
 if (-not (Test-Odoo)) {
     Start-Process -FilePath $py -ArgumentList @(
         $odoo, '-d', 'odoo_agent', '--db_host=127.0.0.1', "--db_port=$dbPort",
@@ -646,7 +649,18 @@ if (-not (Test-Odoo)) {
     ) -WindowStyle Hidden -RedirectStandardOutput (Join-Path $root 'odoo.log')
     for ($i = 0; $i -lt 40; $i++) { if (Test-Odoo) { break }; Start-Sleep -Seconds 2 }
 }
-Start-Process "http://localhost:$port"
+# Open the browser to the assistant's own chat (the AI office), NOT to Odoo's web login:
+# localhost:8069 is the ERP's back-end login page, and opening it is what made the shortcut
+# show a login screen instead of the assistant from the second launch on. The office chat is
+# served by the assistant on port 5290 and ships in the AgentBridge release. Wait for it before
+# opening, so the window shows the assistant instead of a "cannot reach" page.
+for ($i = 0; $i -lt 40; $i++) { if (Test-Assistant) { break }; Start-Sleep -Seconds 3 }
+if (Test-Assistant) {
+    Start-Process $officeUrl
+} else {
+    Write-Host "The assistant did not start on port $officePort. Run 'agent.exe' in the folder"
+    Write-Host "$root\agentbridge to bring it up, then double-click the 'AI Odoo' icon again."
+}
 if (Test-Path $ab) { Start-Process -FilePath $ab -WorkingDirectory (Join-Path $root 'agentbridge') }
 '@
 $launcherPath = Join-Path $InstallRoot 'start.ps1'
@@ -685,11 +699,11 @@ if ($Problems.Count -gt 0) {
 }
 Write-Host "  HOW TO START:"
 Write-Host "    Double-click the 'AI Odoo' icon on the Desktop (or in the Start Menu)."
-Write-Host "    It starts Odoo, opens it in the browser and launches the assistant."
-Write-Host "    Then type a request such as 'list the customers'."
+Write-Host "    It opens the assistant in the browser: that is where you talk to it."
+Write-Host "    Type a request there such as 'list the customers'."
 Write-Host ''
-Write-Host "  Odoo URL:       http://localhost:$OdooPort"
-Write-Host "  Odoo login:     $AdminEmail / $AdminPass   (local to this PC - no Odoo account needed)"
+Write-Host "  Assistant (talk to it here):  http://localhost:5290/OfficeManager"
+Write-Host "  Odoo (the data behind it):    http://localhost:$OdooPort   login $AdminEmail / $AdminPass"
 Write-Host "  PostgreSQL:     superuser '$PgSuper' password '$PgSuperPass' on port $DbPort (set by this installer)"
 Write-Host "  Install root:   $InstallRoot"
 Write-Host "  AgentBridge:    $AbDir"

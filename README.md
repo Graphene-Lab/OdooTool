@@ -85,8 +85,9 @@ enables the OdooTool plugin, writes the Odoo address and an API key into the plu
 and starts Odoo and the assistant.
 
 When it finishes, open the assistant and ask something like *"list the customers"*. The assistant
-uses OdooTool to read — and, when you ask for it, change — the data in Odoo. You can watch the
-result in the Odoo window at `http://localhost:8069`. The installer prints the generated admin login
+opens in the browser at `http://localhost:5290/OfficeManager` — that chat window is where you talk
+to it. It uses OdooTool to read — and, when you ask for it, change — the data in Odoo. You can watch
+the result in the Odoo window at `http://localhost:8069`. The installer prints the generated admin login
 and password at the end: they are created locally, not registered anywhere.
 
 The installer downloads the public AgentBridge release with `curl` (built into Windows 10+), so no

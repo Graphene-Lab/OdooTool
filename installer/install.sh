@@ -274,6 +274,8 @@ create_launcher() {
 #!/bin/bash
 ROOT=$(printf '%q' "$INSTALL_ROOT")
 PORT=$ODOO_PORT
+OFFICE_PORT=5290
+OFFICE_URL="http://localhost:$OFFICE_PORT/OfficeManager"
 DBPORT=$DB_PORT
 DBUSER=$(printf '%q' "$DB_USER")
 DBPASS=$(printf '%q' "$DB_PASSWORD")
@@ -286,9 +288,19 @@ if ! curl -sf -o /dev/null "http://localhost:$PORT"; then
     --http-port "$PORT" --http-interface=0.0.0.0 > "$ROOT/odoo.log" 2>&1 < /dev/null &
   for i in $(seq 1 40); do curl -sf -o /dev/null "http://localhost:$PORT" && break; sleep 2; done
 fi
-xdg-open "http://localhost:$PORT" >/dev/null 2>&1 &
+# Open the browser to the assistant's own chat (the AI office), NOT to Odoo's web login:
+# localhost:$PORT is the ERP's back-end login page, and opening it is what made the launcher
+# show a login screen instead of the assistant. The office chat is served by the assistant on
+# port $OFFICE_PORT. Wait for it before opening, so the window shows the assistant instead of a
+# "cannot reach" page.
+for i in $(seq 1 40); do curl -sf -o /dev/null "$OFFICE_URL" && break; sleep 3; done
+if curl -sf -o /dev/null "$OFFICE_URL"; then
+  xdg-open "$OFFICE_URL" >/dev/null 2>&1 &
+else
+  echo "The assistant did not start on port $OFFICE_PORT. Run '$ROOT/agentbridge/agent' to bring it up, then double-click the 'AI Odoo' icon again."
+fi
 if [ -x "$ROOT/agentbridge/agent" ]; then
-  x-terminal-emulator -e "$ROOT/agentbridge/agent" 2>/dev/null || "$ROOT/agentbridge/agent" &
+  setsid "$ROOT/agentbridge/agent" > "$ROOT/agentbridge/agent.log" 2>&1 < /dev/null &
 fi
 LAUNCHER
   chmod +x "$INSTALL_ROOT/start.sh"

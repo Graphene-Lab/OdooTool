@@ -2,6 +2,10 @@
 REM OdooTool installer launcher for Windows.
 REM Works even when only this .bat was downloaded: it fetches install.ps1 by itself.
 REM The window stays open at the end so the user can read the messages.
+REM
+REM INSTALLER CONTRACT - see INSTALLER-CONTRACT.md. The "AI Odoo" icon created by the
+REM installer must start Odoo AND AgentBridge with the OdooTool plugin; never Odoo alone
+REM and never OfficeManager (the multi-agent view).
 setlocal
 title OdooTool installer
 

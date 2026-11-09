@@ -10,6 +10,11 @@
 #   5. Configures OdooTool with the Odoo address and an API key.
 #   6. Starts Odoo and opens the AgentBridge assistant.
 #
+# INSTALLER CONTRACT - do not change without reading INSTALLER-CONTRACT.md.
+# The "AI Odoo" launcher must always start BOTH Odoo and AgentBridge (with the OdooTool
+# plugin). It must never open only Odoo and must never launch OfficeManager, the multi-agent
+# view. Shared rationale: AgentBridge/docs-dev/INSTALLER-CONTRACT.md.
+#
 # Run:  bash install.sh
 #
 set -euo pipefail
@@ -266,6 +271,8 @@ open_firewall() {
   fi
 }
 
+# Launcher contract: start Odoo, open it in the default browser, then start AgentBridge with
+# the OdooTool plugin already in Tools/. Do not reduce this to an Odoo-only shortcut.
 create_launcher() {
   log "Creating the one-click launcher"
   # Header: written now, storing the real values as safe bash literals with printf %q, so a path
@@ -352,6 +359,9 @@ main() {
   echo "    Double-click the 'AI Odoo' icon (Applications menu or Desktop)."
   echo "    It starts Odoo, opens it in the browser and launches the assistant."
   echo "    Then type a request such as 'list the customers'."
+  echo "    The database and the admin user are already created: do not run the Odoo database manager."
+  echo "    If it appears, the install did not complete: run install.sh again."
+  echo "    Odoo 20 first steps: https://www.odoo.com/documentation/20.0/applications.html"
   echo
   echo "  Odoo URL:       http://localhost:$ODOO_PORT"
   echo "  Odoo login:     $ADMIN_EMAIL / $ADMIN_PASS   (local to this PC - no Odoo account needed)"

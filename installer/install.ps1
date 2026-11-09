@@ -7,6 +7,11 @@
 #   4. Downloads AgentBridge and installs the OdooTool plugin (activated by default).
 #   5. Configures OdooTool with the Odoo address and an API key.
 #   6. Opens the firewall port, starts Odoo and leaves the assistant ready.
+#
+# INSTALLER CONTRACT - do not change without reading INSTALLER-CONTRACT.md.
+# The "AI Odoo" launcher must always start BOTH Odoo and AgentBridge (with the OdooTool
+# plugin). It must never open only Odoo and must never launch OfficeManager, the multi-agent
+# view. Shared rationale: AgentBridge/docs-dev/INSTALLER-CONTRACT.md.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
@@ -626,6 +631,8 @@ for ($i = 0; $i -lt 30; $i++) {
 if (-not $up) { Problem "Odoo did not answer on port $OdooPort after 60s; check $InstallRoot\odoo.log." }
 
 # --- One-click launcher + shortcut -------------------------------------
+# Launcher contract: start Odoo, open it in the default browser, then start AgentBridge with
+# the OdooTool plugin already in Tools/. Do not reduce this to an Odoo-only shortcut.
 Log "Creating the one-click launcher and shortcuts"
 $launcherTemplate = @'
 $ErrorActionPreference = 'Continue'
@@ -701,6 +708,9 @@ Write-Host "  HOW TO START:"
 Write-Host "    Double-click the 'AI Odoo' icon on the Desktop (or in the Start Menu)."
 Write-Host "    It opens the assistant in the browser: that is where you talk to it."
 Write-Host "    Type a request there such as 'list the customers'."
+Write-Host "    The database and the admin user are already created: do not run the Odoo database manager."
+Write-Host "    If it appears, the install did not complete: run install.bat again."
+Write-Host "    Odoo 20 first steps: https://www.odoo.com/documentation/20.0/applications.html"
 Write-Host ''
 Write-Host "  Assistant (talk to it here):  http://localhost:5290/OfficeManager"
 Write-Host "  Odoo (the data behind it):    http://localhost:$OdooPort   login $AdminEmail / $AdminPass"

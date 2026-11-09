@@ -196,6 +196,17 @@ GitHub release zip the host installs into `Tools/OdooTool/`, and the NuGet packa
 `Graphene.OdooTool`. The class derives from `BaseAgentTool`; each public method becomes a tool
 method for the LLM with a snake_case name.
 
+## Installer contract (contributors)
+
+The installer's **AI Odoo** icon is a deliberate design decision: it must start **both** Odoo and
+AgentBridge with the OdooTool plugin already active, and it must never open Odoo alone or launch
+OfficeManager (the multi-agent view). The reason is the single-agent, privacy-first local
+deployment: on a local GPU, parallel agents share the same VRAM instead of adding compute.
+
+Before changing anything in `installer/`, read **[INSTALLER-CONTRACT.md](INSTALLER-CONTRACT.md)**.
+The shared decision record and rationale are in
+[AgentBridge/docs-dev/INSTALLER-CONTRACT.md](https://github.com/Graphene-Lab/AgentBridge/blob/master/docs-dev/INSTALLER-CONTRACT.md).
+
 ## FAQ
 
 **Does OdooTool work with Odoo Community (the free edition)?**

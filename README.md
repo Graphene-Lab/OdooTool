@@ -86,11 +86,19 @@ and starts Odoo.
 
 When it finishes, double-click the **AI Odoo** icon (Desktop or application menu). It starts
 Odoo and AgentBridge and opens the assistant in the browser at
-`http://localhost:5290/OfficeManager` — that chat window is where you talk to it. Ask something
+`http://localhost:5290/OfficeManager` — that window is where you talk to it. Ask something
 like *"list the customers"*: it uses OdooTool to read — and, when you ask for it, change — the
 data in Odoo. You can watch the result in the Odoo UI at `http://localhost:8069`. The installer
 prints the generated admin login and password at the end: they are created locally, not
 registered anywhere.
+
+The assistant window is a small office where every little person is one AI agent. They pace
+around and look idle until you give one a task — type your request in the chat at the bottom
+and press Enter, and a worker takes it and does the operation in Odoo. That window is for asking
+the agent to run day-to-day operations in plain language (*"send the invoice to Maria"*, *"which
+orders are late"*). Setting up the company — chart of accounts, taxes, products, users — is done
+in Odoo's own web screen at `http://localhost:8069` (login with the admin account the installer
+printed), not in the assistant office.
 
 The installer downloads the public AgentBridge release with `curl` (built into Windows 10+), so no
 GitHub sign-in is needed. Re-running it is safe: it continues where it stopped and reuses what is

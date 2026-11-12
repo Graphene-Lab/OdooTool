@@ -420,6 +420,23 @@ if ($probe.Code -eq 0) {
 }
 Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
 
+# Odoo 20 runs on Python 3.10-3.13. Python 3.14 and 3.15 already exist and a plain "python" on
+# the PATH may point at them; Odoo 20 cannot build its native extensions (lxml, Pillow, psycopg2)
+# and will even fail to import them there. A too-new interpreter therefore makes the whole pip
+# install abort (and "No module named 'babel'" in the database step) instead of just failing that
+# one library, so this rejects it and the virtualenv is always built on a supported release.
+function Test-PythonOk([string]$pyExe) {
+    # -Stop at the top of the script means a missing interpreter would throw; treat "not found"
+    # as "not usable" so the install continues to the supported-Python fallback.
+    if (-not (Get-Command $pyExe -ErrorAction SilentlyContinue)) { return $false }
+    $ver = (& $pyExe --version 2>&1 | Out-String)
+    $m = [regex]::Match($ver, 'Python\s+(\d+)\.(\d+)')
+    if (-not $m.Success) { return $false }
+    return ([int]$m.Groups[1].Value -eq 3 -and
+            [int]$m.Groups[2].Value -ge 10 -and
+            [int]$m.Groups[2].Value -le 13)
+}
+
 # --- Odoo ---------------------------------------------------------------
 Log "Cloning Odoo Community ($OdooBranch)"
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
@@ -431,11 +448,22 @@ if (-not (Test-Path $OdooDir)) {
 Log "Installing Odoo Python requirements in a virtualenv"
 $venvDir = Join-Path $InstallRoot 'venv'
 $py = Join-Path $venvDir 'Scripts\python.exe'
+$venvMade = $false
 if (Test-Path $py) {
-    Log "reusing the existing virtualenv"
-} else {
-    if (Test-Path $venvDir) { Remove-Item -Recurse -Force $venvDir -ErrorAction SilentlyContinue }
-    $venvMade = $false
+    # A virtualenv left by an earlier run or by another tool may have been built with a Python
+    # newer than Odoo 20 supports (e.g. 3.14/3.15). Reuse it only on a supported release;
+    # otherwise recreate it so Odoo 20's native extensions can build.
+    if (Test-PythonOk $py) {
+        Log "reusing the existing virtualenv"
+        $venvMade = $true
+    } else {
+        Warn "the existing virtualenv uses a Python Odoo 20 does not support; recreating it"
+        Remove-Item -Recurse -Force $venvDir -ErrorAction SilentlyContinue
+    }
+}
+if (-not $venvMade) {
+    # Prefer the 'py' launcher's supported releases; if none is installed, the plain 'python'
+    # on the PATH might be too new, so probe it before trusting it.
     if (Get-Command py -ErrorAction SilentlyContinue) {
         foreach ($v in @('3.12','3.11','3.13','3.10')) {
             $p = Invoke-Native -Exe 'py' -ArgList @("-$v", '-m', 'venv', $venvDir)
@@ -443,8 +471,21 @@ if (Test-Path $py) {
         }
     }
     if (-not $venvMade) {
-        $p = Invoke-Native -Exe 'python' -ArgList @('-m', 'venv', $venvDir)
-        if ($p.Code -ne 0) { Warn "Could not create the virtualenv (exit $($p.Code)): $($p.Text)" }
+        # The fallback 'python' might be a too-new release (3.14/3.15) or a Microsoft Store
+        # alias; only build with it when it is a supported version.
+        if (Test-PythonOk 'python') {
+            $p = Invoke-Native -Exe 'python' -ArgList @('-m', 'venv', $venvDir)
+            if ($p.Code -eq 0 -and (Test-Path $py)) { $venvMade = $true }
+            else { Warn "Could not create the virtualenv (exit $($p.Code)): $($p.Text)" }
+        } else {
+            Warn "the 'python' on your PATH is newer than Odoo 20 supports; installing Python 3.12"
+            $r = Invoke-Native -Exe 'winget' -ArgList @('install', '-e', '--id', 'Python.Python.3.12', '--accept-source-agreements', '--accept-package-agreements')
+            if ($r.Code -ne 0) { Problem "winget could not install Python 3.12 (exit $($r.Code))." }
+            foreach ($v in @('3.12','3.11','3.13','3.10')) {
+                $p = Invoke-Native -Exe 'py' -ArgList @("-$v", '-m', 'venv', $venvDir)
+                if ($p.Code -eq 0 -and (Test-Path $py)) { $venvMade = $true; break }
+            }
+        }
     }
 }
 $py = Join-Path $venvDir 'Scripts\python.exe'
@@ -515,7 +556,13 @@ Start-Process -FilePath $py -ArgumentList @(
 ) -RedirectStandardInput $scriptPath -RedirectStandardOutput $outPath -RedirectStandardError $errPath `
   -NoNewWindow -Wait
 $OdooApiKey = ''
-if (Test-Path $outPath) { $OdooApiKey = (Get-Content -Raw $outPath).Trim() }
+if (Test-Path $outPath) {
+    # odoo-bin shell writes nothing (the database step failed, or Odoo was unreachable), so the
+    # redirected file can exist but be empty; Get-Content -Raw then returns $null and .Trim() used
+    # to throw "You cannot call a method on a null-valued expression". Treat empty as "no key".
+    $rawKey = Get-Content -Raw $outPath
+    if ($rawKey) { $OdooApiKey = $rawKey.Trim() }
+}
 if ([string]::IsNullOrWhiteSpace($OdooApiKey)) {
     Problem "Could not auto-create the API key. Create it in Odoo (Preferences -> Account Security -> New API Key) and put it in $odooJsonPath, otherwise the assistant cannot call Odoo."
 }

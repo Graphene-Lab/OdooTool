@@ -252,6 +252,27 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 }
 $psql = Find-Psql
 if (-not $psql) {
+    # A port that is already taken is the most common reason a perfectly good PostgreSQL
+    # installation fails on a developer's PC: another database, a Docker container, or - very
+    # often - a WSL distro whose own PostgreSQL is forwarded to 127.0.0.1 by wslrelay. The
+    # vendor installer answers "The specified port number is not available. Please enter a
+    # different port." and exits 1, which reads like a network fault; the user is left with no
+    # database and a message about a port. Choose the first free port instead and carry it
+    # through the whole stack (role, database, Odoo, the launcher), so nobody has to know.
+    function Test-PortFree([int]$port) {
+        try { return -not (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) }
+        catch { return $true }
+    }
+    if (-not (Test-PortFree ([int]$DbPort))) {
+        $free = $null
+        foreach ($candidate in 5433..5455) { if (Test-PortFree $candidate) { $free = $candidate; break } }
+        if ($free) {
+            Warn "TCP port $DbPort is already in use on this PC; the new PostgreSQL will listen on $free instead."
+            $DbPort = [string]$free
+        } else {
+            Problem "TCP ports 5432-5455 are all in use. Set DB_PORT to a free port and run this installer again."
+        }
+    }
     # curl.exe ships with Windows 10 1803+ and resumes a partial transfer, so the PostgreSQL
     # download below can be retried without starting over.
     $curl = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
@@ -273,7 +294,7 @@ if (-not $psql) {
         $got = $false
         foreach ($v in @('16.15-5', '16.15-4', '16.9-3')) {
             $url = "https://get.enterprisedb.com/postgresql/postgresql-$v-windows-x64.exe?download=1"
-            # Start from nothing, every attempt. A leftover file from an earlier run (or from
+            # Start from nothing before a transfer. A leftover file from an earlier run (or from
             # winget's own failed download) is not a partial download of THIS url, and resuming
             # it with "curl -C -" appends the real file to the wrong bytes: the result is bigger
             # than the original and the installer then dies with "Installer payload
@@ -281,12 +302,19 @@ if (-not $psql) {
             # file." — a message that sends the user looking for a network problem that is not
             # there. The expected size is read first, so a short transfer is caught here instead
             # of three screens later.
-            Remove-Item $pgSetup -Force -ErrorAction SilentlyContinue
             $expected = $null
             try {
                 $head = Invoke-WebRequest -Uri $url -Method Head -UseBasicParsing -TimeoutSec 60
                 $expected = [int64]$head.Headers['Content-Length']
             } catch { }
+            # A file that already matches the declared size is a complete download of THIS url:
+            # reusing it saves the transfer without trusting anything unverified.
+            if ($expected -and (Test-Path $pgSetup) -and (Get-Item $pgSetup).Length -eq $expected) {
+                Log "reusing the verified download of $v"
+                $got = $true
+                break
+            }
+            Remove-Item $pgSetup -Force -ErrorAction SilentlyContinue
             if ($curl) {
                 $c = Invoke-Native -Exe $curl -ArgList @('-fL', '--retry', '5', '--retry-delay', '5', '--output', $pgSetup, $url)
             } else {
@@ -700,6 +728,22 @@ if ($LlmUrl -and -not (Test-Path (Join-Path $cfg 'providers.json'))) {
 @"
 { "baseUrl": "http://localhost:$OdooPort", "apiKey": "$OdooApiKey", "database": "odoo_agent" }
 "@ | Set-Content -Path (Join-Path $cfg 'odoo.json') -Encoding UTF8
+
+# The plugin being installed is not the same as the plugin being USED. AgentBridge resolves the
+# tools of a chat from the agent set (a preset id plus an optional custom list) and the
+# default preset contains only the file, web and git tools. Without this file the assistant is
+# installed, connected and ready — and answers "there are no Odoo tools in this environment",
+# which is the most confusing possible outcome for a user who has just run one command.
+# The toolset is PersistentData configuration, so writing it here is the installer's job.
+$toolset = Join-Path $cfg 'toolset.json'
+if (-not (Test-Path $toolset)) {
+    @"
+{ "agent_set": "default-agent", "tools": ["FileTool", "WebTool", "GitTool", "OdooTool"] }
+"@ | Set-Content -Path $toolset -Encoding UTF8
+    Log "OdooTool enabled in the assistant's tool set"
+} else {
+    Log "Keeping the existing toolset.json"
+}
 
 # --- Firewall -----------------------------------------------------------
 Log "Opening TCP port $OdooPort in Windows Firewall"

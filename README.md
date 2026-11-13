@@ -39,9 +39,10 @@ running Odoo instance at `http://localhost:8069`.
 
 **This is the easy way.** You do not need .NET, Git, Docker, a Python environment or any manual
 configuration: one script installs and wires the whole stack — **PostgreSQL + Odoo 20 Community +
-AgentBridge + OdooTool** — and only asks for the few things nobody can guess for you (company name,
-admin email and which AI provider to use). It never asks for a PostgreSQL password: when PostgreSQL
-is missing the installer creates it and assigns the superuser password itself.
+AgentBridge + OdooTool** — and asks only for the company name. The AI provider is asked later, by
+the assistant itself on its first start, where a key can actually be tested: pick the service, paste
+the key, and it fetches that service's own model list. It never asks for a PostgreSQL password: when
+PostgreSQL is missing the installer creates it and assigns the superuser password itself.
 Press Enter to accept every suggestion.
 
 ### Windows (10/11)

@@ -236,9 +236,13 @@ $Company    = Ask "Company name" "My Company" 'COMPANY_NAME'
 # ADMIN_EMAIL / ADMIN_PASS still override them for unattended runs.
 $AdminEmail = if ([string]::IsNullOrWhiteSpace($env:ADMIN_EMAIL)) { 'admin@example.com' } else { $env:ADMIN_EMAIL }
 $AdminPass  = if ([string]::IsNullOrWhiteSpace($env:ADMIN_PASS))  { GeneratePassword }    else { $env:ADMIN_PASS }
-$LlmUrl     = Ask "LLM provider base URL (OpenAI-compatible)" "http://192.168.43.253:8741/v1" 'LLM_BASE_URL'
-$LlmKey     = AskSecret "LLM provider API key" "" 'LLM_KEY'
-$LlmModel   = Ask "LLM model name" "halogen-qwen3.8-flash-next" 'LLM_MODEL'
+# The AI provider is NOT asked here: AgentBridge asks on its first start, offering the known
+# services with their models and a masked key field. That question belongs where the answer is
+# used — the installer cannot test a key, so a wrong address typed here only surfaces later,
+# inside the assistant. LLM_* still configure a stack unattended (a scripted or CI install).
+$LlmUrl     = $env:LLM_BASE_URL
+$LlmKey     = $env:LLM_KEY
+$LlmModel   = $env:LLM_MODEL
 
 # --- Prerequisites (install only what is missing) -----------------------
 Log "Checking PostgreSQL, Python and Git"
@@ -269,14 +273,32 @@ if (-not $psql) {
         $got = $false
         foreach ($v in @('16.15-5', '16.15-4', '16.9-3')) {
             $url = "https://get.enterprisedb.com/postgresql/postgresql-$v-windows-x64.exe?download=1"
+            # Start from nothing, every attempt. A leftover file from an earlier run (or from
+            # winget's own failed download) is not a partial download of THIS url, and resuming
+            # it with "curl -C -" appends the real file to the wrong bytes: the result is bigger
+            # than the original and the installer then dies with "Installer payload
+            # initialization failed. This is likely due to an incomplete or corrupt downloaded
+            # file." — a message that sends the user looking for a network problem that is not
+            # there. The expected size is read first, so a short transfer is caught here instead
+            # of three screens later.
+            Remove-Item $pgSetup -Force -ErrorAction SilentlyContinue
+            $expected = $null
+            try {
+                $head = Invoke-WebRequest -Uri $url -Method Head -UseBasicParsing -TimeoutSec 60
+                $expected = [int64]$head.Headers['Content-Length']
+            } catch { }
             if ($curl) {
-                $c = Invoke-Native -Exe $curl -ArgList @('-fL', '--retry', '5', '--retry-delay', '5', '-C', '-', '--output', $pgSetup, $url)
+                $c = Invoke-Native -Exe $curl -ArgList @('-fL', '--retry', '5', '--retry-delay', '5', '--output', $pgSetup, $url)
             } else {
                 $c = @{ Code = 1; Text = '' }
                 try { Invoke-WebRequest -Uri $url -OutFile $pgSetup -UseBasicParsing -TimeoutSec 3600; $c = @{ Code = 0; Text = '' } }
                 catch { $c = @{ Code = 1; Text = "$_" } }
             }
-            if ($c.Code -eq 0 -and (Test-Path $pgSetup) -and (Get-Item $pgSetup).Length -gt 100MB) { $got = $true; break }
+            if ($c.Code -eq 0 -and (Test-Path $pgSetup)) {
+                $size = (Get-Item $pgSetup).Length
+                if (-not $expected -or $size -eq $expected) { $got = $true; break }
+                Warn "the download is incomplete ($size of $expected bytes); trying again"
+            }
             Log "that version could not be downloaded: $(Tail $c.Text 200)"
             Remove-Item $pgSetup -Force -ErrorAction SilentlyContinue
         }
@@ -640,14 +662,41 @@ try {
     Problem ("Could not install the OdooTool plugin: " + $_.Exception.Message)
 }
 
-Log "Configuring AgentBridge with the LLM provider and the OdooTool plugin"
+Log "Configuring AgentBridge: the OdooTool plugin and the Odoo address"
 $cfg = Join-Path $AbDir 'PersistentData'
 New-Item -ItemType Directory -Force -Path $cfg | Out-Null
-if (-not (Test-Path (Join-Path $cfg 'providers.json'))) {
-@"
-{ "providers": [ { "name": "OdooStackLLM", "baseUrl": "$LlmUrl", "apiKey": "$LlmKey", "model": "$LlmModel" } ] }
+# providers.json is an ARRAY of provider objects, and the field names are the ones the
+# engine reads (ProviderName, BaseAddress, EndPoint, ModelName, ApiKey). A different shape
+# is not a configuration error the app reports: it silently falls back to the factory list,
+# so the assistant would answer with a provider the user never chose. Only written when an
+# unattended run supplied LLM_BASE_URL; otherwise the first start asks (see the note above).
+if ($LlmUrl -and -not (Test-Path (Join-Path $cfg 'providers.json'))) {
+    $base = $LlmUrl.TrimEnd('/') + '/'
+    # ".../v1" already carries the version segment: only the call path is missing.
+    $endPoint = if ($LlmUrl.TrimEnd('/') -match '/v1$') { 'chat/completions' } else { 'v1/chat/completions' }
+    $modelName = if ($LlmModel) { $LlmModel } else { 'default' }
+    @"
+[
+  {
+    "ProviderName": "OdooStackLLM",
+    "IsDefault": true,
+    "Protocol": "OpenAI",
+    "CacheType": "PrefixCache",
+    "ModelName": "$modelName",
+    "ApiKey": "$LlmKey",
+    "BaseAddress": "$base",
+    "EndPoint": "$endPoint",
+    "Timeout": "00:05:00",
+    "ContextWindow": 128000
+  }
+]
 "@ | Set-Content -Path (Join-Path $cfg 'providers.json') -Encoding UTF8
-} else { Log "Keeping the existing providers.json" }
+    Log "AI provider written to providers.json (unattended install)"
+} elseif (Test-Path (Join-Path $cfg 'providers.json')) {
+    Log "Keeping the existing providers.json"
+} else {
+    Log "The AI provider will be asked by the assistant on its first start"
+}
 @"
 { "baseUrl": "http://localhost:$OdooPort", "apiKey": "$OdooApiKey", "database": "odoo_agent" }
 "@ | Set-Content -Path (Join-Path $cfg 'odoo.json') -Encoding UTF8

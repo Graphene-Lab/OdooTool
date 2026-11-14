@@ -109,7 +109,8 @@ For a fully unattended run, set these environment variables before starting:
 `COMPANY_NAME`, `ADMIN_EMAIL`, `ADMIN_PASS`, `LLM_BASE_URL`, `LLM_KEY`, `LLM_MODEL`,
 `DB_USER`, `DB_PASSWORD`, `DB_PORT`, `PG_SUPERUSER`, `PG_SUPERPASS` (Windows), `ODOO_REPO`,
 `ODOO_BRANCH`, `ODOO_MAJOR` (Linux), `ODOO_PORT`, `AB_REPO`, `AB_TAG`, `TOOL_PKG`, `INSTALL_ROOT`,
-and `ODOO_API_KEY` (Linux, to reuse an existing key).
+`INSTALL_NEED_GB` (free space required before anything is downloaded, default 12) and
+`ODOO_API_KEY` (Linux, to reuse an existing key).
 iOS is not supported: Odoo and AgentBridge do not run on iOS.
 
 ## What you need

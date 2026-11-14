@@ -67,6 +67,20 @@ run_wizard() {
   ask LLM_MODEL    "LLM model name" "halogen-qwen3.8-flash-next"
 }
 
+# --- Free space ----------------------------------------------------------
+# PostgreSQL, Odoo with its virtualenv and the 1.4 GB AgentBridge archive (plus the same again
+# extracted) all land under one root. A disk that fills up does not fail cleanly: it truncates
+# whatever is being written at that moment, so the space is checked before the first download.
+INSTALL_NEED_GB="${INSTALL_NEED_GB:-12}"
+check_space() {
+  mkdir -p "$INSTALL_ROOT" || die "cannot create $INSTALL_ROOT"
+  local avail_gb
+  avail_gb=$(df -Pk "$INSTALL_ROOT" | awk 'NR==2 {printf "%.1f", $4/1048576}')
+  awk -v a="$avail_gb" -v n="$INSTALL_NEED_GB" 'BEGIN { exit (a < n) ? 1 : 0 }' ||
+    die "not enough free space on $INSTALL_ROOT - ${avail_gb} GB free, about ${INSTALL_NEED_GB} GB needed (INSTALL_NEED_GB overrides)"
+  log "Free space: ${avail_gb} GB"
+}
+
 # --- Prerequisites -------------------------------------------------------
 install_prereqs() {
   log "Installing PostgreSQL and Python build dependencies"
@@ -197,6 +211,8 @@ install_agentbridge() {
     tar -tzf "$AB_DIR/$asset" >/dev/null 2>&1 || die "AgentBridge archive could not be verified (download corrupt)"
   fi
   tar -xzf "$AB_DIR/$asset" -C "$AB_DIR" || die "AgentBridge extraction failed"
+  # 1 GB that is never needed again; keeping it doubled the footprint of the install.
+  rm -f "$AB_DIR/$asset"
 }
 
 install_plugin() {
@@ -341,6 +357,7 @@ start_odoo() {
 main() {
   log "OdooTool installer ($INSTALL_ROOT)"
   run_wizard
+  check_space
   install_prereqs
   configure_postgres
   install_odoo

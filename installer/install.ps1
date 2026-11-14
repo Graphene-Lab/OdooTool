@@ -256,6 +256,24 @@ $LlmUrl     = $env:LLM_BASE_URL
 $LlmKey     = $env:LLM_KEY
 $LlmModel   = $env:LLM_MODEL
 
+# --- Free space ---------------------------------------------------------
+# Everything lands on one disk and the total is large: PostgreSQL ~350 MB, Odoo with its
+# virtualenv ~700 MB, AgentBridge 1.4 GB of archive plus the same again extracted. A full disk is
+# not a failed install, it is Windows itself breaking: Explorer's icon and thumbnail caches are
+# written into %LOCALAPPDATA% and a write that runs out of space truncates them, after which the
+# shell crashes inside thumbcache.dll on every restart (measured 2026-11-14 at 0 GB free). The
+# space is therefore checked before the first download, while the machine is still healthy.
+$NeedGb = if ($env:INSTALL_NEED_GB) { [double]$env:INSTALL_NEED_GB } else { 12 }
+# DriveInfo, not Get-PSDrive: the latter rejects a name carrying the colon ('C:'), and the
+# rejected lookup yields 0 free GB, which would refuse every install on a healthy disk.
+$rootDrive = [IO.Path]::GetPathRoot($InstallRoot)
+$freeGb = [math]::Round(([IO.DriveInfo]::new($rootDrive)).AvailableFreeSpace / 1GB, 2)
+if ($freeGb -lt $NeedGb) {
+    throw ("Not enough free space on $rootDrive - $freeGb GB free, about $NeedGb GB needed. " +
+           "Free some space and run the installer again. INSTALL_NEED_GB overrides the estimate.")
+}
+Log "Free space on $rootDrive $freeGb GB"
+
 # --- Prerequisites (install only what is missing) -----------------------
 Log "Checking PostgreSQL, Python and Git"
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -737,6 +755,9 @@ if (-not $verified) { throw "AgentBridge archive could not be verified (download
 $t = Invoke-Native -Exe 'tar' -ArgList @('-xzf', $pkg, '-C', $AbDir)
 if ($t.Code -ne 0) { throw "AgentBridge extraction failed (exit $($t.Code)): $($t.Text)" }
 if (-not (Test-Path (Join-Path $AbDir 'agent.exe'))) { throw "AgentBridge binary missing after extraction" }
+# The archive is 1.4 GB and is never needed again: keeping it doubled the footprint of the
+# install and is what turned a full disk into a broken Windows shell on 2026-11-14.
+Remove-Item $pkg -Force -ErrorAction SilentlyContinue
 }
 
 # --- OdooTool plugin: AgentBridge loads plugins from Tools/ next to the exe ---

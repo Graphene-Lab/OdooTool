@@ -525,10 +525,36 @@ if (-not (Test-Path (Join-Path $OdooDir 'odoo-bin'))) {
         Warn "removing an incomplete Odoo folder left by an earlier run"
         Remove-Item -Recurse -Force $OdooDir -ErrorAction SilentlyContinue
     }
-    $c = Invoke-Native -Exe 'git' -ArgList @('clone', '--depth', '1', '--branch', $OdooBranch, $OdooRepo, $OdooDir)
-    if ($c.Code -ne 0) { Problem "git clone finished with exit $($c.Code): $(Tail $c.Text 300). Without the Odoo source there is nothing to install." }
+    # A clone that stalls on a slow or throttled connection leaves the folder empty and would stop
+    # the install after twenty minutes of nothing. It is therefore bounded: if it does not finish,
+    # the branch archive below is one HTTP transfer and gets the source in a couple of minutes.
+    $gitOut = Join-Path $InstallRoot 'odoo-clone.log'
+    $gp = Start-Process -FilePath 'git' -ArgumentList @('clone', '--depth', '1', '--branch', $OdooBranch, $OdooRepo, $OdooDir) -PassThru -NoNewWindow -RedirectStandardOutput $gitOut -RedirectStandardError "$gitOut.err"
+    if (-not $gp.WaitForExit(900000)) {
+        try { $gp.Kill() } catch { }
+        Warn "the git clone did not finish within fifteen minutes and was stopped"
+    }
     if (-not (Test-Path (Join-Path $OdooDir 'odoo-bin'))) {
-        throw "The Odoo source is not in '$OdooDir' after the clone. Check the network and run install.bat again - it continues where it stopped."
+        Warn "the git clone did not produce the Odoo source; downloading the branch archive instead"
+        Remove-Item $OdooDir -Recurse -Force -ErrorAction SilentlyContinue
+        $zip = Join-Path $InstallRoot 'odoo-source.zip'
+        $src = ($OdooRepo -replace '\.git$', '') + '/archive/refs/heads/' + $OdooBranch + '.zip'
+        Remove-Item $zip -Force -ErrorAction SilentlyContinue
+        $dl = Invoke-Native -Exe 'curl' -ArgList @('-fL', '--retry', '3', '--retry-delay', '5', '-o', $zip, $src)
+        if ($dl.Code -ne 0 -or -not (Test-Path $zip)) { throw "Odoo could not be downloaded from $src (exit $($dl.Code)): $(Tail $dl.Text 300)" }
+        $tmp = Join-Path $InstallRoot 'odoo-extract'
+        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+        $ex = Invoke-Native -Exe 'tar' -ArgList @('-xf', $zip, '-C', $tmp)
+        if ($ex.Code -ne 0) { throw "The Odoo archive could not be extracted (exit $($ex.Code)): $(Tail $ex.Text 300)" }
+        $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
+        if (-not $inner) { throw "The Odoo archive was empty." }
+        Move-Item $inner.FullName $OdooDir
+        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item $zip -Force -ErrorAction SilentlyContinue
+    }
+    if (-not (Test-Path (Join-Path $OdooDir 'odoo-bin'))) {
+        throw "The Odoo source is not in '$OdooDir' after the clone and the archive fallback. Check the network and run install.bat again - it continues where it stopped."
     }
 }
 

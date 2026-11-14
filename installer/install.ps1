@@ -38,6 +38,17 @@ $PgSuper    = if ($env:PG_SUPERUSER){ $env:PG_SUPERUSER } else { 'postgres' }
 # exists to override it in unattended runs.
 $PgSuperPass = if ($env:PG_SUPERPASS) { $env:PG_SUPERPASS } else { 'odoo' }
 $OdooPort   = if ($env:ODOO_PORT)   { $env:ODOO_PORT }   else { '8069' }
+# The company currency follows the machine's locale: an installation on an Italian PC is a euro
+# company, one on a Swiss PC is a franc company. Nobody installs an ERP on a machine in Milan to
+# keep the books in Canadian dollars, so the region decides and CURRENCY overrides.
+$Region = ((Get-Culture).Name -split '-')[-1].ToUpperInvariant()
+$CurrencyByRegion = @{
+    IT='EUR'; DE='EUR'; FR='EUR'; ES='EUR'; NL='EUR'; PT='EUR'; GR='EUR'; FI='EUR'; IE='EUR'
+    AT='EUR'; BE='EUR'; LU='EUR'; SK='EUR'; SI='EUR'; LV='EUR'; LT='EUR'; EE='EUR'; MT='EUR'
+    CY='EUR'; HR='EUR'; GB='GBP'; CH='CHF'; US='USD'; CA='CAD'; SE='SEK'; DK='DKK'; NO='NOK'
+    PL='PLN'; CZ='CZK'; HU='HUF'; RO='RON'; BG='BGN'
+}
+$CurrencyCode = if ($env:CURRENCY) { $env:CURRENCY } elseif ($CurrencyByRegion.ContainsKey($Region)) { $CurrencyByRegion[$Region] } else { 'EUR' }
 
 function Log($m)  { Write-Host "`n==> $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "! $m" -ForegroundColor Yellow }
@@ -661,6 +672,7 @@ Log "Creating the Odoo API key for the admin user"
 $env:ODOO_ADMIN_EMAIL = $AdminEmail
 $env:ODOO_ADMIN_PASS  = $AdminPass
 $env:ODOO_COMPANY_NAME = $Company
+$env:ODOO_CURRENCY = $CurrencyCode
 $keyScript = @'
 import os
 admin = env["res.users"].browse(2)
@@ -680,6 +692,23 @@ if company_name and company.name != company_name:
     company.write({"name": company_name})
     if company.partner_id:
         company.partner_id.write({"name": company_name})
+# The currency comes from the machine's locale (install.ps1 passes it in). Without this the
+# company keeps whatever the base module shipped, and a European company issues documents in
+# dollars while every screen says EUR.
+currency_code = os.environ.get("ODOO_CURRENCY", "").strip().upper()
+if currency_code:
+    currency = env["res.currency"].search([("name", "=", currency_code)], limit=1)
+    if currency and company.currency_id.id != currency.id:
+        company.write({"currency_id": currency.id})
+        company = env["res.company"].browse(1)
+# A quotation takes its currency from the PRICELIST, not from the company. A fresh database ships
+# one pricelist in USD, so a company whose localisation switched it to euros kept issuing
+# quotations and invoices in dollars (measured 2026-11-14: company EUR, pricelist USD, every
+# sale order in USD). The base pricelist is brought in line with the company currency here.
+pricelist = env["product.pricelist"].search([("name", "=", "Default")], limit=1)
+if pricelist and pricelist.currency_id.id != company.currency_id.id:
+    pricelist.write({"currency_id": company.currency_id.id,
+                     "name": "Default " + company.currency_id.name})
 key = env["res.users.apikeys"].with_user(admin)._generate("rpc", "agentbridge", None)
 env.cr.commit()
 print(key or "")

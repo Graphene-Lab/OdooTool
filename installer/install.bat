@@ -4,9 +4,14 @@ REM Works even when only this .bat was downloaded: it fetches install.ps1 by its
 REM The window stays open at the end so the user can read the messages.
 REM
 REM INSTALLER CONTRACT - see INSTALLER-CONTRACT.md. The "AI Odoo" icon created by the
-REM installer must start Odoo AND AgentBridge with the OdooTool plugin and open the
-REM assistant chat at http://localhost:5290/OfficeManager; never Odoo alone and never
-REM Odoo's login page. A successful run ends by opening the Odoo 20 first-steps page.
+REM installer must start Odoo, give AgentBridge a visible terminal window, and open Odoo at
+REM http://localhost:8069 in the default browser. The assistant's office chat on 5290 is a
+REM second entrance and is never opened automatically.
+REM
+REM CROSS-PLATFORM PARITY - this file and installer\install.ps1 are the Windows half of ONE
+REM installer. Every substantial change here must be made in installer/install.sh too: the
+REM Linux user must get the same behaviour, the same questions and the same final state.
+REM Do not "simplify" one side on its own.
 setlocal
 title OdooTool installer
 

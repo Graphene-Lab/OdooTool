@@ -12,10 +12,15 @@
 #      running with the assistant installed and ready to start from the icon.
 #
 # INSTALLER CONTRACT - do not change without reading INSTALLER-CONTRACT.md.
-# The "AI Odoo" launcher must start Odoo and AgentBridge (with the OdooTool plugin) and open
-# the assistant chat at http://localhost:5290/OfficeManager. It must never open only Odoo and
-# must never open Odoo's login page instead of the chat. Shared rationale:
+# The "AI Odoo" launcher must start Odoo, give AgentBridge a visible terminal window, and open
+# Odoo at http://localhost:8069 in the default browser. The assistant's office chat on 5290 is a
+# second entrance and is never opened automatically. Shared rationale:
 # AgentBridge/docs-dev/INSTALLER-CONTRACT.md.
+#
+# CROSS-PLATFORM PARITY - this file is the Linux half of ONE installer. Every substantial change
+# here must be made in installer/install.ps1 (and installer/install.bat) as well: the Windows user
+# must get the same behaviour, the same questions and the same final state. Do not "simplify" one
+# side on its own.
 #
 # Run:  bash install.sh
 #

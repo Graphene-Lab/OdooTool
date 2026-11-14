@@ -641,6 +641,7 @@ if ([string]::IsNullOrWhiteSpace($existingKey)) {
 Log "Creating the Odoo API key for the admin user"
 $env:ODOO_ADMIN_EMAIL = $AdminEmail
 $env:ODOO_ADMIN_PASS  = $AdminPass
+$env:ODOO_COMPANY_NAME = $Company
 $keyScript = @'
 import os
 admin = env["res.users"].browse(2)
@@ -652,6 +653,14 @@ else:
     found = env["res.users"].search([("login", "=", os.environ["ODOO_ADMIN_EMAIL"])], limit=1)
     if found:
         admin = found
+# The company name asked in the wizard has to reach the database: without this the ERP stays
+# "My Company" and every printed document carries the installer's placeholder.
+company_name = os.environ.get("ODOO_COMPANY_NAME", "").strip()
+company = env["res.company"].browse(1)
+if company_name and company.name != company_name:
+    company.write({"name": company_name})
+    if company.partner_id:
+        company.partner_id.write({"name": company_name})
 key = env["res.users.apikeys"].with_user(admin)._generate("rpc", "agentbridge", None)
 env.cr.commit()
 print(key or "")

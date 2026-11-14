@@ -211,9 +211,21 @@ try {
     if (Test-Elevated) {
         & powershell @argList | Out-Null
     } else {
+        # Start-Process joins an array with single spaces and does not quote the elements, so a path
+        # such as 'C:\Program Files\PostgreSQL\16\bin\psql.exe' arrives at the elevated shell split
+        # in two and the helper starts with no usable arguments - a bare powershell that waits
+        # forever. The string below quotes every element that contains a space.
+        $argString = ($argList | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
         Warn "Windows will ask for Administrator rights: changing the local PostgreSQL '$PgSuper' password needs them."
-        try { Start-Process -FilePath 'powershell' -ArgumentList $argList -Verb RunAs -Wait | Out-Null }
-        catch { return $null }
+        try {
+            $elev = Start-Process -FilePath 'powershell.exe' -ArgumentList $argString -Verb RunAs -PassThru -WindowStyle Hidden
+            # An unattended run must never wait on a consent dialog nobody is going to click.
+            if (-not $elev.WaitForExit(240000)) {
+                try { $elev.Kill() } catch { }
+                Warn "the elevated password reset did not finish within four minutes; run install.bat as Administrator to complete it."
+                return $null
+            }
+        } catch { return $null }
     }
     # Verify with the value that was written, so a failed reset is not mistaken for a success.
     for ($i = 0; $i -lt 10; $i++) {
@@ -333,6 +345,21 @@ if (-not $psql) {
         if ($got) {
             $inst = Start-Process -FilePath $pgSetup -ArgumentList @('--mode', 'unattended', '--unattendedmodeui', 'none', '--serverport', $DbPort, '--superpassword', $PgSuperPass) -Wait -PassThru
             if ($inst.ExitCode -ne 0) { Problem "the PostgreSQL installer finished with exit $($inst.ExitCode)." }
+            # The silent installer does not always honour --superpassword (the EDB package has
+            # ignored it on some releases). Verify it now, while the reason is still obvious, so the
+            # next step does not look like a wrong password typed by the user.
+            $fresh = Find-Psql
+            if ($fresh) {
+                $okSuper = $false
+                for ($i = 0; $i -lt 15; $i++) {
+                    $env:PGPASSWORD = $PgSuperPass
+                    $t = Invoke-Native -Exe $fresh -ArgList @('-w', '-U', $PgSuper, '-h', '127.0.0.1', '-p', $DbPort, '-d', 'postgres', '-tAc', 'select 1')
+                    if ($t.Code -eq 0) { $okSuper = $true; break }
+                    Start-Sleep -Seconds 2
+                }
+                if ($okSuper) { Log "the PostgreSQL superuser password is the one this installer assigned" }
+                else { Warn "the PostgreSQL installer did not apply the superuser password this run passed; it will be reset in the next step" }
+            }
         } else {
             Problem "PostgreSQL could not be downloaded (winget and the direct download both failed). Install it yourself from enterprisedb.com and run this installer again - it continues where it stopped."
         }
@@ -490,9 +517,19 @@ function Test-PythonOk([string]$pyExe) {
 # --- Odoo ---------------------------------------------------------------
 Log "Cloning Odoo Community ($OdooBranch)"
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
-if (-not (Test-Path $OdooDir)) {
+# The test is on the source, not on the folder: a clone interrupted after git created the target
+# directory leaves an empty folder that used to make this step skip forever, and the run then died
+# three screens later on a missing requirements.txt.
+if (-not (Test-Path (Join-Path $OdooDir 'odoo-bin'))) {
+    if (Test-Path $OdooDir) {
+        Warn "removing an incomplete Odoo folder left by an earlier run"
+        Remove-Item -Recurse -Force $OdooDir -ErrorAction SilentlyContinue
+    }
     $c = Invoke-Native -Exe 'git' -ArgList @('clone', '--depth', '1', '--branch', $OdooBranch, $OdooRepo, $OdooDir)
     if ($c.Code -ne 0) { Problem "git clone finished with exit $($c.Code): $(Tail $c.Text 300). Without the Odoo source there is nothing to install." }
+    if (-not (Test-Path (Join-Path $OdooDir 'odoo-bin'))) {
+        throw "The Odoo source is not in '$OdooDir' after the clone. Check the network and run install.bat again - it continues where it stopped."
+    }
 }
 
 Log "Installing Odoo Python requirements in a virtualenv"

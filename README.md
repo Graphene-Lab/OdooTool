@@ -158,7 +158,7 @@ AIOffice desktop application. The CAD counterpart of this tool is
 | `create_record(model, values)` | Creates a new record. |
 | `update_record(model, ids, values)` | Updates existing records. |
 | `delete_record(model, ids)` | Deletes records permanently. |
-| `call_method(model, action, ids?, params?)` | Calls any model method (e.g. `action_confirm`). |
+| `call_method(model, action, ids?, params?)` | Calls a workflow action (e.g. `action_confirm`). CRUD verbs are refused: they have their own methods, and only those keep the ORM context — including `no_vat_validation` — out of reach. |
 | `read_group(model, domain, group_by, fields)` | Groups records and computes aggregates. |
 | `get_menus(filter?)` | Lists the Odoo menus the user can access. |
 | `get_menu_details(menu_ids)` | Gets detailed info about specific menus. |

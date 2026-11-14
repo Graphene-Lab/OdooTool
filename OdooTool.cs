@@ -17,6 +17,19 @@ public class OdooTool : BaseAgentTool
 {
     private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
 
+    // CRUD verbs that call_method must not carry: each one has a typed method, and only the
+    // typed method keeps the parameter names right and the ORM context out of the model's reach.
+    private static readonly Dictionary<string, string> CrudVerbs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["create"] = "create_record(model, values)",
+        ["write"] = "update_record(model, ids, values)",
+        ["unlink"] = "delete_record(model, ids)",
+        ["read"] = "read(model, ids, fields)",
+        ["search"] = "search(model, domain, fields, limit, offset, order)",
+        ["search_read"] = "search(model, domain, fields, limit, offset, order)",
+        ["read_group"] = "read_group(model, domain, groupBy, aggregates, order, limit)",
+    };
+
     // ─── Discovery ───────────────────────────────────────────────────────────────
 
     /// <summary>Lists every Odoo model the current user can access, with its technical name
@@ -226,7 +239,8 @@ public class OdooTool : BaseAgentTool
 
     /// <summary>Calls a workflow action on an Odoo model, such as confirming a sale order,
     /// cancelling a record, or posting an invoice. Use get_fields() to discover available
-    /// actions on a model, or try common ones: action_confirm, action_cancel, action_post, action_done.</summary>
+    /// actions on a model, or try common ones: action_confirm, action_cancel, action_post, action_done.
+    /// CRUD verbs are rejected here: they have their own methods with the right parameter names.</summary>
     /// <param name="model">Technical model name, e.g. "sale.order".</param>
     /// <param name="action">The action name to execute, e.g. "action_confirm", "action_cancel", "action_post".</param>
     /// <param name="ids">JSON array of record IDs to act on, e.g. [1]. Use [] for model-level actions.</param>
@@ -242,6 +256,14 @@ public class OdooTool : BaseAgentTool
                 return "Error: 'model' is required.";
             if (string.IsNullOrWhiteSpace(action))
                 return "Error: 'action' is required. Provide the action name, e.g. 'action_confirm'.";
+            // Every CRUD verb has a dedicated method whose parameter names are already correct
+            // (create_record takes `values`, not the ORM's `vals_list`) and which never forwards
+            // a context. That matters: `context: {no_vat_validation: true}` is precisely the
+            // escape hatch a model reaches for instead of reporting a rejected VAT number, so
+            // the path to it must not exist here.
+            if (CrudVerbs.TryGetValue(action, out var instead))
+                return $"Error: '{action}' is a CRUD verb, not a workflow action. Use {instead}. " +
+                       "call_method is for actions like action_confirm, action_post or action_cancel.";
 
             var body = new JsonObject();
             var idsNode = ParseJson(ids, "ids");

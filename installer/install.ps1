@@ -11,9 +11,10 @@
 #      the icon.
 #
 # INSTALLER CONTRACT - do not change without reading INSTALLER-CONTRACT.md.
-# The "AI Odoo" launcher must start Odoo and AgentBridge (with the OdooTool plugin) and open
-# the assistant chat at http://localhost:5290/OfficeManager. It must never open only Odoo and
-# must never open Odoo's login page instead of the chat. Shared rationale:
+# The "AI Odoo" launcher must start Odoo and AgentBridge (with the OdooTool plugin) in a visible
+# terminal window, and open the default browser on Odoo at http://localhost:8069. The assistant's
+# office chat at http://localhost:5290/OfficeManager is a second entrance and must NOT be opened
+# automatically: doing so hid the ERP behind a page the user had not asked for. Shared rationale:
 # AgentBridge/docs-dev/INSTALLER-CONTRACT.md.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -867,9 +868,10 @@ for ($i = 0; $i -lt 30; $i++) {
 if (-not $up) { Problem "Odoo did not answer on port $OdooPort after 60s; check $InstallRoot\odoo.log." }
 
 # --- One-click launcher + shortcut -------------------------------------
-# Launcher contract: start Odoo, start AgentBridge (with the OdooTool plugin already in
-# Tools/) if the chat is not answering, wait for the chat and open it in the default browser.
-# Do not reduce this to an Odoo-only shortcut or open Odoo's login page instead of the chat.
+# Launcher contract: start Odoo, start AgentBridge as a VISIBLE terminal window (the TUI is the
+# product; a process started without a console shows nothing), and open the default browser on
+# Odoo itself. The office chat on 5290 is a second entrance, not the destination: opening it on
+# start-up hid the ERP behind a page the user had not asked for.
 Log "Creating the one-click launcher and shortcuts"
 $launcherTemplate = @'
 $ErrorActionPreference = 'Continue'
@@ -878,13 +880,10 @@ $py = Join-Path $root 'venv\Scripts\python.exe'
 $odoo = Join-Path $root 'odoo\odoo-bin'
 $ab = Join-Path $root 'agentbridge\agent.exe'
 $port = 8069
-$officePort = 5290
-$officeUrl = "http://localhost:$officePort/OfficeManager"
 $dbPort = __DB_PORT__
 $dbUser = __DB_USER__
 $dbPass = __DB_PASS__
 function Test-Odoo { (Test-NetConnection -ComputerName 127.0.0.1 -Port $port -WarningAction SilentlyContinue).TcpTestSucceeded }
-function Test-Assistant { try { (Invoke-WebRequest $officeUrl -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200 } catch { $false } }
 if (-not (Test-Odoo)) {
     Start-Process -FilePath $py -ArgumentList @(
         $odoo, '-d', 'odoo_agent', '--db_host=127.0.0.1', "--db_port=$dbPort",
@@ -893,22 +892,18 @@ if (-not (Test-Odoo)) {
     ) -WindowStyle Hidden -RedirectStandardOutput (Join-Path $root 'odoo.log')
     for ($i = 0; $i -lt 40; $i++) { if (Test-Odoo) { break }; Start-Sleep -Seconds 2 }
 }
-# Open the browser to the assistant's own chat (the AI office), NOT to Odoo's web login:
-# localhost:8069 is the ERP's back-end login page, and opening it is what made the shortcut
-# show a login screen instead of the assistant from the second launch on. The office chat is
-# served by the assistant on port 5290 and ships in the AgentBridge release. Start the
-# assistant first (only if the chat is not already answering), then wait for it, then open
-# the window, so it shows the assistant instead of a "cannot reach" page.
-if (-not (Test-Assistant) -and (Test-Path $ab)) {
-    Start-Process -FilePath $ab -WorkingDirectory (Join-Path $root 'agentbridge')
+# The assistant opens in its own console window: conhost guarantees a real console even when
+# Windows Terminal is the default host, so the TUI is visible and stays open after this script
+# ends. If an assistant is already running on 5290 it is not started twice.
+$abUp = Get-NetTCPConnection -LocalPort 5290 -State Listen -ErrorAction SilentlyContinue
+if (-not $abUp -and (Test-Path $ab)) {
+    Start-Process -FilePath 'conhost.exe' -ArgumentList $ab, '--no-update' `
+        -WorkingDirectory (Join-Path $root 'agentbridge') -WindowStyle Normal
 }
-for ($i = 0; $i -lt 40; $i++) { if (Test-Assistant) { break }; Start-Sleep -Seconds 3 }
-if (Test-Assistant) {
-    Start-Process $officeUrl
-} else {
-    Write-Host "The assistant did not start on port $officePort. Run 'agent.exe' in the folder"
-    Write-Host "$root\agentbridge to bring it up, then double-click the 'AI Odoo' icon again."
-}
+# Odoo in the default browser, once it answers: the ERP is what the icon promises.
+for ($i = 0; $i -lt 30; $i++) { if (Test-Odoo) { break }; Start-Sleep -Seconds 2 }
+if (Test-Odoo) { Start-Process "http://localhost:$port" }
+else { Write-Host "Odoo did not answer on port $port; see $root\odoo.log" }
 '@
 $launcherPath = Join-Path $InstallRoot 'start.ps1'
 # Put the real role name and password in, quoted so nothing can break or be injected when they

@@ -314,19 +314,27 @@ if ! curl -sf -o /dev/null "http://localhost:$PORT/web/login"; then
     --http-port "$PORT" --http-interface=0.0.0.0 > "$ROOT/odoo.log" 2>&1 < /dev/null &
   for i in $(seq 1 40); do curl -sf -o /dev/null "http://localhost:$PORT/web/login" && break; sleep 2; done
 fi
-# Open the browser to the assistant's own chat (the AI office), NOT to Odoo's web login:
-# localhost:$PORT is the ERP's back-end login page, and opening it is what made the launcher
-# show a login screen instead of the assistant. The office chat is served by the assistant on
-# port $OFFICE_PORT. Start the assistant first (only if the chat is not already answering),
-# then wait for it, then open the window.
-if ! curl -sf -o /dev/null "$OFFICE_URL" && [ -x "$ROOT/agentbridge/agent" ]; then
-  setsid "$ROOT/agentbridge/agent" > "$ROOT/agentbridge/agent.log" 2>&1 < /dev/null &
+# Start the assistant in its own terminal window when 5290 is free: the TUI is the product, and
+# a detached process without a terminal shows nothing. If no terminal emulator is available the
+# agent still starts headless, so the chat remains reachable at $OFFICE_URL.
+if ! curl -sf -o /dev/null "http://localhost:$OFFICE_PORT" && [ -x "$ROOT/agentbridge/agent" ]; then
+  if command -v x-terminal-emulator >/dev/null 2>&1; then
+    setsid x-terminal-emulator -e "$ROOT/agentbridge/agent" >/dev/null 2>&1 < /dev/null &
+  elif command -v gnome-terminal >/dev/null 2>&1; then
+    setsid gnome-terminal -- "$ROOT/agentbridge/agent" >/dev/null 2>&1 < /dev/null &
+  elif command -v konsole >/dev/null 2>&1; then
+    setsid konsole -e "$ROOT/agentbridge/agent" >/dev/null 2>&1 < /dev/null &
+  elif command -v xterm >/dev/null 2>&1; then
+    setsid xterm -e "$ROOT/agentbridge/agent" >/dev/null 2>&1 < /dev/null &
+  else
+    setsid "$ROOT/agentbridge/agent" > "$ROOT/agentbridge/agent.log" 2>&1 < /dev/null &
+  fi
 fi
-for i in $(seq 1 40); do curl -sf -o /dev/null "$OFFICE_URL" && break; sleep 3; done
-if curl -sf -o /dev/null "$OFFICE_URL"; then
-  xdg-open "$OFFICE_URL" >/dev/null 2>&1 &
-else
-  echo "The assistant did not start on port $OFFICE_PORT. Run '$ROOT/agentbridge/agent' to bring it up, then double-click the 'AI Odoo' icon again."
+# Odoo in the default browser: the ERP is what the icon promises, and it is where the results of
+# the assistant's work are seen. The browser chat on $OFFICE_PORT stays a second entrance.
+for i in $(seq 1 30); do curl -sf -o /dev/null "http://localhost:$PORT/web/login" && break; sleep 2; done
+if command -v xdg-open >/dev/null 2>&1; then
+  xdg-open "http://localhost:$PORT" >/dev/null 2>&1 &
 fi
 LAUNCHER
   chmod +x "$INSTALL_ROOT/start.sh"

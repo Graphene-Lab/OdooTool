@@ -86,20 +86,27 @@ enables the OdooTool plugin, writes the Odoo address and an API key into the plu
 and starts Odoo.
 
 When it finishes, double-click the **AI Odoo** icon (Desktop or application menu). It starts
-Odoo and AgentBridge and opens the assistant in the browser at
-`http://localhost:5290/OfficeManager` — that window is where you talk to it. Ask something
-like *"list the customers"*: it uses OdooTool to read — and, when you ask for it, change — the
-data in Odoo. You can watch the result in the Odoo UI at `http://localhost:8069`. The installer
-prints the generated admin login and password at the end: they are created locally, not
-registered anywhere.
+Odoo, opens the Odoo page at `http://localhost:8069` in your browser, and opens the assistant in
+its own terminal window: that terminal is where you type. Ask something like *"list the
+customers"*: it uses OdooTool to read — and, when you ask for it, change — the data in Odoo, and
+the result appears in the Odoo page next to it. The installer prints the generated admin login
+and password at the end: they are created locally, not registered anywhere.
 
-The assistant window is a small office where every little person is one AI agent. They pace
+The same assistant also has a browser chat at `http://localhost:5290/OfficeManager`, a small
+office where every little person is one AI agent. They pace
 around and look idle until you give one a task — type your request in the chat at the bottom
 and press Enter, and a worker takes it and does the operation in Odoo. That window is for asking
 the agent to run day-to-day operations in plain language (*"send the invoice to Maria"*, *"which
 orders are late"*). Setting up the company — chart of accounts, taxes, products, users — is done
 in Odoo's own web screen at `http://localhost:8069` (login with the admin account the installer
 printed), not in the assistant office.
+
+> **One agent at a time, please.** The office can run several agents in parallel, and that is a
+> trap with a local model: one machine has one GPU and one VRAM budget, so parallel agents share
+> the same model and slow each other down instead of finishing sooner — and they can exhaust the
+> memory and take the whole stack down. Use one agent, as this installation is configured. The
+> launcher never opens this window on start-up for the same reason: it is a tool you reach for,
+> not the place the ERP should be hidden behind.
 
 The installer downloads the public AgentBridge release with `curl` (built into Windows 10+), so no
 GitHub sign-in is needed. Re-running it is safe: it continues where it stopped and reuses what is
@@ -211,9 +218,11 @@ method for the LLM with a snake_case name.
 ## Installer contract (contributors)
 
 The installer's **AI Odoo** icon is a deliberate design decision: it must start **both** Odoo and
-AgentBridge with the OdooTool plugin already active, and open the **assistant chat** at
-`http://localhost:5290/OfficeManager` — never Odoo alone, and never Odoo's login page instead of
-the chat. The chat is served by AgentBridge and in the standard installation drives one agent.
+AgentBridge with the OdooTool plugin already active, give the assistant a **visible terminal**,
+and open the **Odoo page** at `http://localhost:8069`. The assistant's browser chat at
+`http://localhost:5290/OfficeManager` is a second entrance: it is available, but the launcher does
+not open it, because doing so hid the ERP behind a page the user had not asked for. The chat is
+served by AgentBridge and in the standard installation drives one agent.
 The reason is the single-agent, privacy-first local deployment: on a local GPU, parallel agents
 share the same VRAM instead of adding compute.
 

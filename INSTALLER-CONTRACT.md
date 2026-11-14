@@ -7,27 +7,34 @@
 ## The invariant
 
 The **AI Odoo** icon on the Desktop and in the application menu must always start the whole
-stack and open the assistant:
+stack and leave the user in front of the ERP:
 
 1. **Odoo** (if it is not already running), waiting until it answers;
-2. **AgentBridge** with the **OdooTool plugin already active** in `Tools/OdooTool/`;
-3. the **assistant chat** at `http://localhost:5290/OfficeManager` in the system default
-   browser — that is where the user types the prompt.
+2. **AgentBridge** with the **OdooTool plugin already active** in `Tools/OdooTool/`, in a
+   **visible terminal window** — the TUI is the product, and a process started without a
+   console shows nothing;
+3. the **Odoo page** at `http://localhost:8069` in the system default browser, so the user sees
+   the data the assistant works on.
 
-The user must land in a working state: the assistant chat open, Odoo already running behind
-it, ready for a prompt such as *"list the customers"*. The agent acts on Odoo through
-OdooTool. The final summary prints the Odoo URL and login, so the user can open the ERP UI
-when they want to watch the result.
+The user must land in a working state: Odoo open in the browser, the assistant's terminal open
+beside it, ready for a prompt such as *"list the customers"*. The agent acts on Odoo through
+OdooTool, and every result is visible in the page that was just opened.
 
-The icon must **never** open Odoo alone, and must **never** open Odoo's login page instead of
-the assistant chat (the regression behind issue #7).
+The assistant's browser chat at `http://localhost:5290/OfficeManager` is a **second entrance**,
+available but not opened automatically. It used to be what the launcher opened; that hid the
+ERP behind a page the user had not asked for, and it made the icon look like it started the
+wrong program (issue #7, reversed on 2026-11-14).
+
+The icon must **never** open Odoo alone without the assistant, and must **never** leave the
+assistant as an invisible background process.
 
 ## Why — the architecture decision
 
 AgentBridge is the base program: it hosts the agent engine and the chat interface for
-piloting **one** agent. The browser chat at `/OfficeManager` is served by AgentBridge and is
-the window the launcher opens; the name is historical, because the same page also carries the
-optional multi-agent view. In the standard installation it drives one agent.
+piloting **one** agent. The browser chat at `/OfficeManager` is served by AgentBridge; the name
+is historical, because the same page also carries the optional multi-agent view. In the standard
+installation it drives one agent, and it is reached on purpose rather than on start-up: the
+launcher opens the ERP, and the terminal is where the prompt is typed.
 
 AgentBridge is privacy-first, so the intended deployment is a local LLM on the user's own
 machine. Local hardware is fixed: one GPU, one VRAM budget. Two or more agents share that
@@ -58,7 +65,7 @@ rationale and the contract shared by all tool installers are in
 | Admin credentials | generated locally, printed at the end | generated locally, printed at the end |
 | API key | generated and written to `odoo.json` | same |
 | Launcher | `start.ps1` + **AI Odoo** shortcuts (Desktop + Start Menu) | `start.sh` + **ai-odoo.desktop** (`~/.local/share/applications` + `~/Desktop`) |
-| Launcher behaviour | start Odoo, start `agentbridge\agent.exe` if needed, wait for and open `http://localhost:5290/OfficeManager` | start Odoo, start `agentbridge/agent` detached if needed, wait for and `xdg-open` the chat URL |
+| Launcher behaviour | start Odoo, start `agentbridge\agent.exe` in a visible console (`conhost`) if 5290 is free, then open `http://localhost:8069` | start Odoo, start `agentbridge/agent` detached if needed, then `xdg-open` `http://localhost:8069` |
 | First steps | at the end of a successful run, open the Odoo 20 docs page in the default browser | same, via `xdg-open` |
 
 Re-running the installer is safe: it reuses AgentBridge, the virtualenv, the API key and the
@@ -69,24 +76,30 @@ existing configuration.
 - **Do not replace the launcher with an Odoo-only shortcut.** A user may ask for "just Odoo";
   the answer is a separate optional shortcut or the manual command printed at the end, not a
   change to the standard icon.
-- **Do not point the launcher at Odoo's login page.** `http://localhost:8069` is the ERP
-  back-end login; opening it instead of the assistant chat is issue #7. The chat is the first
-  screen, the ERP is the data behind it.
+- **Do not open the assistant's browser chat on start-up.** `http://localhost:5290/OfficeManager`
+  is a second entrance: opening it instead of the ERP is the regression that made the icon look
+  like it started the wrong program (reversed 2026-11-14). The browser opens `http://localhost:8069`.
+- **Do not start AgentBridge as an invisible background process.** The TUI is the product: it
+  gets a real console window (`conhost`), so the user sees the prompt and the tool calls.
 - **Do not remove the AgentBridge launch from the launcher**, and do not make the OdooTool
   plugin optional or inactive by default.
 - **Do not configure a multi-agent workload by default.** The standard installation is
   single-agent; the multi-agent view at `/OfficeManager` remains available but is not the
-  default configuration.
+  default configuration, and it is not for a local model: one machine has one GPU and one VRAM
+  budget, so parallel agents share the same model, slow each other down instead of finishing
+  sooner, and can exhaust the memory and take the stack down. That is also why the launcher
+  never opens the office by itself.
 - **Do not reintroduce a manual first-run step** (for example the Odoo database manager). The
   installer creates the database, the admin user and the API key itself.
 - **Do not remove the idempotent re-run behaviour** (keep the existing API key, providers and
   database on a second run).
-- **Do not wait for the assistant chat before starting AgentBridge.** Start the assistant
-  first (only if the chat is not already answering), then wait, then open the browser.
+- **Do not start a second assistant.** If port 5290 already has a listener, the launcher reuses
+  it instead of starting another copy.
 
-If a user reports that the icon opens only Odoo (or Odoo's login), that is a regression: check
-that the launcher starts `agent.exe` / `agent` and opens the chat URL. If the report is about a
-different installer, point it to the contract above.
+If a user reports that the icon opens only Odoo, that the assistant is missing, or that a page
+other than Odoo appears, that is a regression: check that the launcher starts `agent.exe` /
+`agent` in a visible console and opens the Odoo URL. If the report is about a different
+installer, point it to the contract above.
 
 ## First run
 
@@ -109,8 +122,9 @@ for the installed version is printed at the end:
 ## Checklist for a change to `installer/`
 
 - [ ] The **AI Odoo** launcher still starts Odoo **and** AgentBridge with the plugin active.
-- [ ] The launcher still opens the assistant chat (`http://localhost:5290/OfficeManager`) in
-      the default browser, not Odoo's login page.
+- [ ] The launcher opens the **Odoo page** (`http://localhost:8069`) in the default browser and
+      starts AgentBridge in a **visible terminal**, not as an invisible process.
+- [ ] The launcher does **not** open `http://localhost:5290/OfficeManager` on start-up.
 - [ ] The final message still prints the Odoo URL and login, so the ERP UI can be opened to
       watch the result.
 - [ ] The icon is still created in the application menu/launcher **and** on the Desktop.

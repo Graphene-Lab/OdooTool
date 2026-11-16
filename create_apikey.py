@@ -8,8 +8,13 @@ import odoo
 from odoo.modules.registry import Registry
 from odoo.tools import config
 
-config.parse_config(['-d', 'odoo_test', '--db_user=odoo', '--db_password=REMOVED', '--db_host=localhost', '--no-http'])
-registry = Registry.new('odoo_test')
+# Credentials come from the environment: this file is published in a public repository.
+config.parse_config(['-d', os.environ.get('ODOO_DB_NAME', 'odoo_test'),
+                     '--db_user=' + os.environ.get('ODOO_DB_USER', 'odoo'),
+                     '--db_password=' + os.environ.get('ODOO_DB_PASSWORD', ''),
+                     '--db_host=' + os.environ.get('ODOO_DB_HOST', 'localhost'),
+                     '--no-http'])
+registry = Registry.new(os.environ.get('ODOO_DB_NAME', 'odoo_test'))
 
 with registry.cursor() as cr:
     env = odoo.api.Environment(cr, 1, {})

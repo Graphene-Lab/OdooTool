@@ -15,7 +15,9 @@ public static class Program
 {
     private const string BaseUrl = "http://localhost:8069";
     private const string Database = "odoo_agent";
-    private const string ApiKey = "REMOVED-API-KEY";
+    // The key belongs to the throwaway test database and comes from the environment: a
+    // credential must not live in the repository, which is public.
+    private static readonly string ApiKey = Environment.GetEnvironmentVariable("ODOO_API_KEY") ?? string.Empty;
     private const string Provider = "LanLLM";
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(60) };
 
@@ -53,6 +55,12 @@ public static class Program
                     : new[] { int.Parse(a) })
                 .ToHashSet()
             : null;
+
+        if (string.IsNullOrEmpty(ApiKey))
+        {
+            Console.Error.WriteLine("ODOO_API_KEY is not set: export the key of the throwaway test database before running the campaign.");
+            return 2;
+        }
 
         // LLM provider configuration (keys live in AgentBridge's PersistentData).
         ProviderConfigs.ConfigDirectory = @"C:\Users\andre\OneDrive\Sorgenti\AgentBridge\bin\Debug\net10.0\PersistentData";

@@ -1,0 +1,1 @@
+{"domain":["|",["model","=","mrp.bom"],["model","=","maintenance.request"]],"fields":["model","name","field_description","ttype"],"limit":200,"order":"model,name"}

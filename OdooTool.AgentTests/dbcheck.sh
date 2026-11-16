@@ -1,5 +1,6 @@
 #!/bin/bash
-K="REMOVED-API-KEY"
+# The key of the throwaway test database comes from the environment: never from the source.
+K="${ODOO_API_KEY:?set ODOO_API_KEY before running this check}"
 H1="Authorization: Bearer $K"; H2="Content-Type: application/json"; H3="X-Odoo-Database: odoo_agent"
 echo "=== fleet.vehicle ==="; curl -s -X POST "http://localhost:8069/json/2/fleet.vehicle/search_read" -H "$H1" -H "$H2" -H "$H3" -d '{"domain":[],"fields":["name","license_plate","driver_id"],"limit":10}'
 echo; echo "=== hr.expense ==="; curl -s -X POST "http://localhost:8069/json/2/hr.expense/search_read" -H "$H1" -H "$H2" -H "$H3" -d '{"domain":[],"fields":["name","state","total_amount"],"limit":10}'

@@ -11,7 +11,11 @@ namespace AIOrchestrator.API;
 /// create, update or delete records, call workflow actions, and read grouped aggregates.
 /// Every operation runs as the configured Odoo user, so the ERP's own permissions apply.
 /// Start with get_models() to discover what data is available, then get_fields() to learn
-/// a model's structure before searching or writing.</summary>
+/// a model's structure before searching or writing.
+/// This tool is the company's system of record: for any question or action about customers,
+/// suppliers, products, prices, sales, purchases, invoices, payments or stock, use these methods
+/// rather than a web search, a file or general knowledge; look a named record up here first, and
+/// say so when it is not here.</summary>
 [ToolPurpose(ToolPurpose.BusinessData)]
 public class OdooTool : BaseAgentTool
 {

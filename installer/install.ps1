@@ -19,6 +19,16 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+# Read and write the console as UTF-8. The tools this installer calls print in the language of the
+# machine, and a Windows console whose code page is 850 turns every accented letter into mojibake:
+# "responsabile" arrives as "responsabile" with a broken e, and the user reads garbage in the middle
+# of an otherwise English screen. Setting the encoding here fixes every child process at once.
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    [Console]::InputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+} catch { }
+
 # --- Defaults (override with environment variables) ----------------------
 $OdooRepo   = if ($env:ODOO_REPO)   { $env:ODOO_REPO }   else { 'https://github.com/odoo/odoo.git' }
 $OdooBranch = if ($env:ODOO_BRANCH) { $env:ODOO_BRANCH } else { '20.0' }
@@ -331,19 +341,22 @@ if (-not $psql) {
         # winget itself fails often enough (the vendor CDN answers 403 unless the URL carries a
         # query string, and winget uses the bare URL). Falling back to the same official installer
         # downloaded directly keeps the install going instead of stopping the user here.
-        Warn "winget could not install PostgreSQL (exit $($r.Code)); downloading the official installer directly. $(Tail $r.Text 200)"
-        $pgSetup = Join-Path $env:TEMP 'postgresql-16-windows-x64.exe'
+        # The package manager's own last lines are deliberately not repeated here: they arrive in
+        # the language of the machine and, on a console that cannot render it, as fragments that
+        # look like a fault of this installer. The exit code is the fact that matters, and the next
+        # line says what happens instead.
+        Warn "winget could not install PostgreSQL (exit $($r.Code)); downloading the official installer directly."
+        $pgSetup = $null
         $got = $false
-        foreach ($v in @('16.15-5', '16.15-4', '16.9-3')) {
+        foreach ($v in @('16.16-1', '16.15-5', '16.15-4', '16.9-3')) {
             $url = "https://get.enterprisedb.com/postgresql/postgresql-$v-windows-x64.exe?download=1"
-            # Start from nothing before a transfer. A leftover file from an earlier run (or from
-            # winget's own failed download) is not a partial download of THIS url, and resuming
-            # it with "curl -C -" appends the real file to the wrong bytes: the result is bigger
-            # than the original and the installer then dies with "Installer payload
-            # initialization failed. This is likely due to an incomplete or corrupt downloaded
-            # file." — a message that sends the user looking for a network problem that is not
-            # there. The expected size is read first, so a short transfer is caught here instead
-            # of three screens later.
+            # The partial file carries its version in the name, so "curl -C -" can only ever
+            # continue the transfer it belongs to: a leftover from an earlier run, or from
+            # winget's own failed download, is a different name and is never appended to. On a
+            # slow line the 350 MB installer takes half an hour, and before this the first
+            # dropped connection threw the whole transfer away and started again from zero -
+            # three times, and then the installer gave up.
+            $candidate = Join-Path $env:TEMP "postgresql-$v-windows-x64.exe"
             $expected = $null
             try {
                 $head = Invoke-WebRequest -Uri $url -Method Head -UseBasicParsing -TimeoutSec 60
@@ -351,26 +364,30 @@ if (-not $psql) {
             } catch { }
             # A file that already matches the declared size is a complete download of THIS url:
             # reusing it saves the transfer without trusting anything unverified.
-            if ($expected -and (Test-Path $pgSetup) -and (Get-Item $pgSetup).Length -eq $expected) {
+            if ($expected -and (Test-Path $candidate) -and (Get-Item $candidate).Length -eq $expected) {
                 Log "reusing the verified download of $v"
+                $pgSetup = $candidate
                 $got = $true
                 break
             }
-            Remove-Item $pgSetup -Force -ErrorAction SilentlyContinue
+            # A file bigger than the declared size is not a prefix of this file, so it cannot be
+            # resumed: appending would produce a payload the vendor installer rejects as corrupt.
+            if ($expected -and (Test-Path $candidate) -and (Get-Item $candidate).Length -gt $expected) {
+                Remove-Item $candidate -Force -ErrorAction SilentlyContinue
+            }
             if ($curl) {
-                $c = Invoke-Native -Exe $curl -ArgList @('-fL', '--retry', '5', '--retry-delay', '5', '--output', $pgSetup, $url)
+                $c = Invoke-Native -Exe $curl -ArgList @('-fL', '-C', '-', '--retry', '5', '--retry-delay', '5', '--retry-all-errors', '--output', $candidate, $url)
             } else {
                 $c = @{ Code = 1; Text = '' }
-                try { Invoke-WebRequest -Uri $url -OutFile $pgSetup -UseBasicParsing -TimeoutSec 3600; $c = @{ Code = 0; Text = '' } }
+                try { Invoke-WebRequest -Uri $url -OutFile $candidate -UseBasicParsing -TimeoutSec 3600; $c = @{ Code = 0; Text = '' } }
                 catch { $c = @{ Code = 1; Text = "$_" } }
             }
-            if ($c.Code -eq 0 -and (Test-Path $pgSetup)) {
-                $size = (Get-Item $pgSetup).Length
-                if (-not $expected -or $size -eq $expected) { $got = $true; break }
-                Warn "the download is incomplete ($size of $expected bytes); trying again"
+            if (Test-Path $candidate) {
+                $size = (Get-Item $candidate).Length
+                if (-not $expected -or $size -eq $expected) { $pgSetup = $candidate; $got = $true; break }
+                Warn "the download is incomplete ($size of $expected bytes); the next attempt resumes it"
             }
             Log "that version could not be downloaded: $(Tail $c.Text 200)"
-            Remove-Item $pgSetup -Force -ErrorAction SilentlyContinue
         }
         if ($got) {
             $inst = Start-Process -FilePath $pgSetup -ArgumentList @('--mode', 'unattended', '--unattendedmodeui', 'none', '--serverport', $DbPort, '--superpassword', $PgSuperPass) -Wait -PassThru
@@ -705,7 +722,13 @@ if currency_code:
 # one pricelist in USD, so a company whose localisation switched it to euros kept issuing
 # quotations and invoices in dollars (measured 2026-11-14: company EUR, pricelist USD, every
 # sale order in USD). The base pricelist is brought in line with the company currency here.
-pricelist = env["product.pricelist"].search([("name", "=", "Default")], limit=1)
+# The model only exists once the product module is installed: on the base-only database this
+# script runs against, env["product.pricelist"] raises KeyError and used to abort the whole
+# script - so the API key was never generated and the assistant could not reach Odoo at all.
+try:
+    pricelist = env["product.pricelist"].search([("name", "=", "Default")], limit=1)
+except KeyError:
+    pricelist = None
 if pricelist and pricelist.currency_id.id != company.currency_id.id:
     pricelist.write({"currency_id": company.currency_id.id,
                      "name": "Default " + company.currency_id.name})
@@ -756,7 +779,22 @@ $pkg = Join-Path $AbDir $asset
 # curl.exe (built into Windows 10+) resumes a partial transfer and retries transient
 # failures. BITS stalled here with no progress, so curl is the reliable path.
 $curl = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
-if ($curl) {
+# The archive is 1.4 GB. If it is already on disk and reads as a tar, it is reused instead of
+# transferred again: the check costs a second, and on a slow line it saves an hour. Without this,
+# a run stopped during the download restarted it from zero, which on a 60 KB/s link is a day.
+$skipDownload = $false
+if (Test-Path $pkg) {
+    $probe = Invoke-Native -Exe 'tar' -ArgList @('-tzf', $pkg)
+    if ($probe.Code -eq 0) {
+        Log "reusing the verified AgentBridge archive already on disk"
+        $skipDownload = $true
+    } else {
+        Remove-Item $pkg -Force -ErrorAction SilentlyContinue
+    }
+}
+if ($skipDownload) {
+    # nothing to transfer
+} elseif ($curl) {
     # Resume, never restart: on a flaky link the partial file is kept and -C - continues it.
     $attempt = 0
     while ($true) {

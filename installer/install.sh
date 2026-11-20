@@ -8,14 +8,17 @@
 #   3. Installs Odoo 20 Community and creates a database with the base modules.
 #   4. Downloads AgentBridge and installs the OdooTool plugin (activated by default).
 #   5. Configures OdooTool with the Odoo address and an API key.
-#   6. Starts Odoo, opens the Odoo 20 first-steps page in the default browser and leaves Odoo
-#      running with the assistant installed and ready to start from the icon.
+#   6. Starts Odoo, opens the local start page in the default browser and leaves Odoo running with
+#      the assistant installed and ready to start from the icon.
 #
 # INSTALLER CONTRACT - do not change without reading INSTALLER-CONTRACT.md.
-# The "AI Odoo" launcher must start Odoo, give AgentBridge a visible terminal window, and open
-# Odoo at http://localhost:8069 in the default browser. The assistant's office chat on 5290 is a
-# second entrance and is never opened automatically. Shared rationale:
-# AgentBridge/docs-dev/INSTALLER-CONTRACT.md.
+# The "AI Odoo" launcher must start Odoo, give AgentBridge a visible terminal window, and open the
+# local start page: one screen that says what runs on this machine, with a link to Odoo at
+# http://localhost:8069/web/login?db=odoo_agent and the credentials. The assistant is the terminal
+# window, not a browser tab: the page does not link the office chat. The bare address
+# http://localhost:8069 is not the destination because, with the website module installed, it
+# renders the public placeholder site. The office chat on 5290 is a second entrance: linked, never
+# opened. Shared rationale: AgentBridge/docs-dev/INSTALLER-CONTRACT.md.
 #
 # CROSS-PLATFORM PARITY - this file is the Linux half of ONE installer. Every substantial change
 # here must be made in installer/install.ps1 (and installer/install.bat) as well: the Windows user
@@ -41,6 +44,10 @@ DB_PASSWORD="${DB_PASSWORD:-odoo}"
 DB_PORT="${DB_PORT:-5432}"
 ODOO_PORT="${ODOO_PORT:-8069}"
 ODOO_API_KEY="${ODOO_API_KEY:-}"
+# Filled in by create_api_key: the administrator login that exists and whether this run set its
+# password. Empty means "not configured", never "assume the wizard's default".
+ADMIN_LOGIN=""
+ADMIN_PASS_SET=0
 
 log()  { printf '\n\033[1;32m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m! %s\033[0m\n' "$*"; }
@@ -66,6 +73,9 @@ run_wizard() {
   # credentials. The login and the password are generated locally and printed at the end;
   # ADMIN_EMAIL / ADMIN_PASS still override them for unattended runs.
   ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.com}"
+  # ADMIN_PASS_GIVEN records whether the password came from the environment: on a re-run the
+  # account keeps its own login, and its password is rewritten only when somebody asked for it.
+  ADMIN_PASS_GIVEN="${ADMIN_PASS:-}"
   ADMIN_PASS="${ADMIN_PASS:-$(gen_password)}"
   ask LLM_BASE_URL "LLM provider base URL (OpenAI-compatible)" "http://192.168.43.253:8741/v1"
   ask LLM_KEY      "LLM provider API key" ""
@@ -155,69 +165,124 @@ create_database() {
 }
 
 create_api_key() {
-  # Reuse the API key from a previous install instead of creating a new one.
+  # The key and the administrator account are read in the same Odoo shell run: the key is
+  # generated only when there is none yet, and the account reports its REAL login, so the summary
+  # and the start page never print a user name the database does not have. On a re-run the login
+  # stays as it is and the password is rewritten only when ADMIN_PASS was given: printing a
+  # password that was never applied is worse than printing none (measured 2026-11-20 on Windows).
+  local existing="" need_key=0 set_pass=0 newkey=""
   if [ -f "$AB_DIR/PersistentData/odoo.json" ]; then
-    local existing
     existing="$(sed -n 's/.*"apiKey"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$AB_DIR/PersistentData/odoo.json" 2>/dev/null | head -1)"
-    if [ -n "$existing" ]; then
-      ODOO_API_KEY="$existing"
-      log "Reusing the existing Odoo API key"
-      return 0
-    fi
   fi
-  log "Creating an Odoo API key for the admin user"
-  # Use the Odoo shell to create the key once and save it. The value is shown only at creation.
+  if [ -n "$existing" ]; then
+    ODOO_API_KEY="$existing"
+    log "Reading the administrator account (the API key is already there)"
+  else
+    need_key=1
+    log "Creating an Odoo API key for the admin user"
+  fi
+  [ -n "$ADMIN_PASS_GIVEN" ] && set_pass=1
   ODOO_ADMIN_EMAIL="$ADMIN_EMAIL" ODOO_ADMIN_PASS="$ADMIN_PASS" \
+  ODOO_SET_PASSWORD="$set_pass" ODOO_MAKE_KEY="$need_key" \
   "$INSTALL_ROOT/venv/bin/python" "$ODOO_DIR/odoo-bin" shell -d odoo_agent \
     --db_host=127.0.0.1 --db_port "$DB_PORT" --db_user "$DB_USER" --db_password "$DB_PASSWORD" \
     --addons-path="$ODOO_DIR/addons" --no-http <<'PY' > "$INSTALL_ROOT/odoo_api_key.txt" 2>/dev/null || true
 import os
 admin = env["res.users"].browse(2)
-# Set the admin credentials only on the first install; on a re-run keep the existing ones.
+set_password = os.environ.get("ODOO_SET_PASSWORD") == "1"
+# The database step creates the administrator with the login 'admin'. That account is renamed to
+# the address the wizard asked for and given a password this run can print. On a re-run the login
+# stays as it is, and the password is rewritten only when ADMIN_PASS was given.
 if admin.login == 'admin':
     email = os.environ["ODOO_ADMIN_EMAIL"]
     admin.write({"login": email, "email": email, "password": os.environ["ODOO_ADMIN_PASS"]})
+    set_password = True
 else:
     found = env["res.users"].search([("login", "=", os.environ["ODOO_ADMIN_EMAIL"])], limit=1)
     if found:
         admin = found
-key = env["res.users.apikeys"].with_user(admin)._generate("rpc", "agentbridge", None)
+    if set_password:
+        admin.write({"password": os.environ["ODOO_ADMIN_PASS"]})
+key = ""
+if os.environ.get("ODOO_MAKE_KEY") == "1":
+    key = env["res.users.apikeys"].with_user(admin)._generate("rpc", "agentbridge", None)
 env.cr.commit()
-print(key or "")
+# Three facts on three lines, so a stray log line can never be taken for the key.
+print("KEY=" + (key or ""))
+print("LOGIN=" + (admin.login or ""))
+print("PASSWORD_SET=" + ("1" if set_password else "0"))
 PY
-  ODOO_API_KEY="$(cat "$INSTALL_ROOT/odoo_api_key.txt" 2>/dev/null || true)"
-  if [ -z "$ODOO_API_KEY" ]; then
+  newkey="$(sed -n 's/^KEY=//p' "$INSTALL_ROOT/odoo_api_key.txt" 2>/dev/null | head -1)"
+  [ -n "$newkey" ] && ODOO_API_KEY="$newkey"
+  ADMIN_LOGIN="$(sed -n 's/^LOGIN=//p' "$INSTALL_ROOT/odoo_api_key.txt" 2>/dev/null | head -1)"
+  ADMIN_PASS_SET="$(sed -n 's/^PASSWORD_SET=//p' "$INSTALL_ROOT/odoo_api_key.txt" 2>/dev/null | head -1)"
+  ADMIN_PASS_SET="${ADMIN_PASS_SET:-0}"
+  if [ "$need_key" -eq 1 ] && [ -z "$ODOO_API_KEY" ]; then
     warn "Could not auto-create the API key. Create it in Odoo (Preferences -> Account Security -> New API Key) and set ODOO_API_KEY before starting the assistant."
   fi
 }
 
 # --- AgentBridge + OdooTool plugin --------------------------------------
 install_agentbridge() {
-  if [ -x "$AB_DIR/agent" ]; then
-    log "AgentBridge already installed; skipping download"
-    return 0
-  fi
-  log "Downloading AgentBridge"
   mkdir -p "$AB_DIR"
-  local asset="agentbridge-linux-x64.tar.gz"
-  local url
+  # "Already installed" is not "up to date". The first version of this installer skipped the
+  # download whenever the binary existed, so a stack installed in November kept that assistant for
+  # ever while the tool, the plugin and the book moved on: the user saw a TUI four releases old and
+  # reported it as a bug (2026-11-20). The installed tag is read from a stamp written after every
+  # successful install.
+  local stamp="$AB_DIR/odootool-version.txt" installed="" want="$AB_TAG" need=0
+  [ -f "$stamp" ] && installed="$(tr -d '\r\n' < "$stamp")"
   if [ "$AB_TAG" = "latest" ]; then
-    url="https://github.com/$AB_REPO/releases/latest/download/$asset"
+    # One API call per run, bounded: an install must not fail because a version check did.
+    want="$(curl -fsSL --max-time 30 "https://api.github.com/repos/$AB_REPO/releases/latest" 2>/dev/null \
+      | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    if [ -z "$want" ]; then
+      warn "could not ask GitHub which AgentBridge release is current; keeping what is installed"
+      want="$installed"
+    fi
+  fi
+  if [ ! -x "$AB_DIR/agent" ]; then
+    need=1
+  elif [ -n "$want" ] && [ -n "$installed" ] && [ "$want" != "$installed" ]; then
+    log "AgentBridge $installed is installed and $want is current: updating"
+    # A running assistant holds its own binary open, so it is stopped before the archive is unpacked.
+    pkill -f -- "$AB_DIR/agent" 2>/dev/null || true
+    sleep 2
+    need=1
+  elif [ -z "$installed" ]; then
+    log "AgentBridge is installed (version unknown); keeping it"
   else
-    url="https://github.com/$AB_REPO/releases/download/$AB_TAG/$asset"
+    log "AgentBridge $installed is up to date"
+  fi
+  [ "$need" -eq 1 ] || return 0
+  log "Downloading AgentBridge"
+  local asset="agentbridge-linux-x64.tar.gz"
+  # The file name carries the tag, so a partial transfer left by an earlier run can only ever be
+  # resumed for the release it belongs to: appending a new version to an old prefix produces an
+  # archive the extractor rejects minutes later.
+  local pkg="$AB_DIR/agentbridge-linux-x64-${want:-latest}.tar.gz"
+  local url
+  if [ -n "$want" ] && [ "$want" != "latest" ]; then
+    url="https://github.com/$AB_REPO/releases/download/$want/$asset"
+  else
+    url="https://github.com/$AB_REPO/releases/latest/download/$asset"
   fi
   # Direct download from the public release; no gh auth needed. The archive is ~1 GB,
   # so retry and resume a partial transfer instead of failing on a network blip.
-  curl -fL --retry 5 --retry-delay 5 -C - "$url" -o "$AB_DIR/$asset"
-  if ! tar -tzf "$AB_DIR/$asset" >/dev/null 2>&1; then
+  curl -fL --retry 5 --retry-delay 5 -C - "$url" -o "$pkg"
+  if ! tar -tzf "$pkg" >/dev/null 2>&1; then
     warn "AgentBridge archive is corrupt; downloading again from scratch"
-    rm -f "$AB_DIR/$asset"
-    curl -fL --retry 5 --retry-delay 5 "$url" -o "$AB_DIR/$asset"
-    tar -tzf "$AB_DIR/$asset" >/dev/null 2>&1 || die "AgentBridge archive could not be verified (download corrupt)"
+    rm -f "$pkg"
+    curl -fL --retry 5 --retry-delay 5 "$url" -o "$pkg"
+    tar -tzf "$pkg" >/dev/null 2>&1 || die "AgentBridge archive could not be verified (download corrupt)"
   fi
-  tar -xzf "$AB_DIR/$asset" -C "$AB_DIR" || die "AgentBridge extraction failed"
+  tar -xzf "$pkg" -C "$AB_DIR" || die "AgentBridge extraction failed"
   # 1 GB that is never needed again; keeping it doubled the footprint of the install.
-  rm -f "$AB_DIR/$asset"
+  rm -f "$pkg"
+  # The stamp is what a later run compares against: without it, "already installed" is the only
+  # thing the installer can say, and a stack is frozen at the release it was born with.
+  [ -n "$want" ] && [ "$want" != "latest" ] && printf '%s' "$want" > "$stamp"
+  return 0
 }
 
 install_plugin() {
@@ -294,9 +359,98 @@ open_firewall() {
   fi
 }
 
+# The local start page: a file, not a web service, so it needs no process and works offline. It is
+# what the icon opens and what the installation ends with, and it is regenerated on every run so
+# the credentials on it are the ones that work. It replaced the bare http://localhost:8069, whose
+# meaning depends on what is installed: with the website module it renders the public placeholder
+# site, and a reader cannot tell it apart from a demo web page (reported 2026-11-20).
+html_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
+create_start_page() {
+  log "Writing the start page"
+  local erp_url="http://localhost:$ODOO_PORT/web/login?db=odoo_agent"
+  local login_html pass_html
+  if [ -n "$ADMIN_LOGIN" ]; then
+    login_html="<code>$(printf '%s' "$ADMIN_LOGIN" | html_escape)</code>"
+    if [ "$ADMIN_PASS_SET" = "1" ]; then
+      pass_html="<code>$(printf '%s' "$ADMIN_PASS" | html_escape)</code>"
+    else
+      pass_html="unchanged since the first installation (set ADMIN_PASS before running the installer to change it)"
+    fi
+  else
+    login_html="not configured by this run: read the problems printed above"
+    pass_html="not configured by this run"
+  fi
+  cat > "$INSTALL_ROOT/start.html" <<HTML
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>AI Odoo - start page</title>
+<style>
+  body { margin:0; font:16px/1.55 "Segoe UI", system-ui, sans-serif; color:#1b1b1b; background:#f4f4f6; }
+  main { max-width:780px; margin:0 auto; padding:40px 24px 56px; }
+  h1 { font-size:28px; margin:0 0 10px; }
+  h2 { font-size:18px; margin:34px 0 10px; }
+  .lede { font-size:17px; color:#3c3c46; margin:0 0 26px; }
+  .doors { display:grid; gap:16px; grid-template-columns:1fr; }
+  a.door { display:block; text-decoration:none; color:inherit; background:#fff; border:1px solid #dcdce4;
+           border-radius:10px; padding:18px 20px; }
+  a.door:hover { border-color:#875A7B; }
+  .t { font-weight:600; font-size:18px; color:#714B67; }
+  .d { color:#4a4a55; font-size:15px; margin-top:6px; }
+  .addr { font-family:Consolas, monospace; font-size:13px; color:#6b6b76; margin-top:10px; }
+  .card { background:#fff; border:1px solid #dcdce4; border-radius:10px; padding:14px 20px; }
+  table { border-collapse:collapse; }
+  td { padding:3px 18px 3px 0; vertical-align:top; }
+  td.k { color:#6b6b76; white-space:nowrap; }
+  code { font-family:Consolas, monospace; background:#f0f0f4; padding:1px 5px; border-radius:4px; }
+  ul { margin:6px 0 0; padding-left:20px; }
+  li { margin:5px 0; }
+  footer { margin-top:34px; color:#6b6b76; font-size:13px; }
+</style>
+<main>
+  <h1>AI Odoo is running on this computer</h1>
+  <p class="lede">Odoo is a <strong>web application</strong>: the program runs here, on this PC, and
+  the browser is its screen. The address <code>localhost</code> means <em>this computer</em>.
+  Nothing on this page goes through the internet.</p>
+
+  <div class="doors">
+    <a class="door" href="$erp_url">
+      <div class="t">Open Odoo &rarr;</div>
+      <div class="d">The ERP: customers, products, orders, invoices, stock. Log in with the account below.</div>
+      <div class="addr">http://localhost:$ODOO_PORT</div>
+    </a>
+  </div>
+
+  <h2>The account</h2>
+  <div class="card"><table>
+    <tr><td class="k">Login</td><td>$login_html</td></tr>
+    <tr><td class="k">Password</td><td>$pass_html</td></tr>
+  </table></div>
+
+  <h2>The black window is the assistant</h2>
+  <div class="card"><p style="margin:0">Double-clicking the <strong>AI Odoo</strong> icon also opens a
+  black window: <strong>that is the assistant</strong>, and it is where you talk to it. Type there,
+  for example <em>list the customers</em>, and it does the work in Odoo, in the browser. Leave it
+  open while you work: closing it stops the assistant.</p></div>
+
+  <h2>If a page does not open</h2>
+  <div class="card"><ul>
+    <li>Double-click the <strong>AI Odoo</strong> icon again: it starts whatever is not running.</li>
+    <li>If Odoo still does not answer, the file <code>odoo.log</code> in <code>$INSTALL_ROOT</code> says why.</li>
+    <li>Odoo's own user guide: <a href="https://www.odoo.com/documentation/20.0/applications.html">odoo.com/documentation/20.0</a>.</li>
+  </ul></div>
+
+  <footer>This page is generated by the OdooTool installer. It lives on this computer, in $INSTALL_ROOT.</footer>
+</main>
+</html>
+HTML
+}
+
 # Launcher contract: start Odoo, start AgentBridge (with the OdooTool plugin already in
-# Tools/) if the chat is not answering, wait for the chat and open it in the default browser.
-# Do not reduce this to an Odoo-only shortcut or open Odoo's login page instead of the chat.
+# Tools/) if the chat is not answering, and open the local start page in the default browser.
+# Do not reduce this to an Odoo-only shortcut, and do not open the bare Odoo address: the start
+# page is the one screen that explains what runs here and leads to both doors.
 create_launcher() {
   log "Creating the one-click launcher"
   # Header: written now, storing the real values as safe bash literals with printf %q, so a path
@@ -335,11 +489,15 @@ if ! curl -sf -o /dev/null "http://localhost:$OFFICE_PORT" && [ -x "$ROOT/agentb
     setsid "$ROOT/agentbridge/agent" > "$ROOT/agentbridge/agent.log" 2>&1 < /dev/null &
   fi
 fi
-# Odoo in the default browser: the ERP is what the icon promises, and it is where the results of
-# the assistant's work are seen. The browser chat on $OFFICE_PORT stays a second entrance.
+# The start page in the default browser: it explains what is running and holds the door into the
+# ERP. The assistant is the terminal window, so the office chat on $OFFICE_PORT is not linked.
 for i in $(seq 1 30); do curl -sf -o /dev/null "http://localhost:$PORT/web/login" && break; sleep 2; done
 if command -v xdg-open >/dev/null 2>&1; then
-  xdg-open "http://localhost:$PORT" >/dev/null 2>&1 &
+  if [ -f "$ROOT/start.html" ]; then
+    xdg-open "$ROOT/start.html" >/dev/null 2>&1 &
+  else
+    xdg-open "http://localhost:$PORT/web/login?db=odoo_agent" >/dev/null 2>&1 &
+  fi
 fi
 LAUNCHER
   chmod +x "$INSTALL_ROOT/start.sh"
@@ -389,19 +547,32 @@ main() {
   [ "$odoo_up" -eq 1 ] \
     || warn "Odoo did not answer on port $ODOO_PORT after 60s; check $INSTALL_ROOT/odoo.log."
   open_firewall
+  create_start_page
   create_launcher
   echo
   log "Done."
   echo "  HOW TO START:"
   echo "    Double-click the 'AI Odoo' icon (Applications menu or Desktop)."
-  echo "    It opens the assistant in the browser: that is where you talk to it."
-  echo "    Type a request there such as 'list the customers'."
+  echo "    A page opens in the browser: it says what is running here, with the account and the link."
+  echo "      'Open Odoo'  the ERP, where the data is. Log in with the account below."
+  echo "    A black window also opens: that is the assistant. Type there, for example"
+  echo "    'list the customers', and leave it open while you work."
   echo "    The database and the admin user are already created: do not run the Odoo database manager."
   echo "    If it appears, the install did not complete: run install.sh again."
-  echo "    Odoo 20 first steps: https://www.odoo.com/documentation/20.0/applications.html"
+  echo "    Odoo 20 user guide: https://www.odoo.com/documentation/20.0/applications.html"
   echo
+  echo "  Odoo (the ERP, in the browser):  http://localhost:$ODOO_PORT"
+  if [ -n "$ADMIN_LOGIN" ]; then
+    echo "  Login:    $ADMIN_LOGIN"
+    if [ "$ADMIN_PASS_SET" = "1" ]; then
+      echo "  Password: $ADMIN_PASS"
+    else
+      echo "  Password: unchanged since the first installation (set ADMIN_PASS to change it)"
+    fi
+  else
+    echo "  Login:    not configured by this run - read the problems listed above"
+  fi
   echo "  Assistant (talk to it here):  http://localhost:5290/OfficeManager"
-  echo "  Odoo (the data behind it):    http://localhost:$ODOO_PORT   login $ADMIN_EMAIL / $ADMIN_PASS"
   echo "  Install root:   $INSTALL_ROOT"
   echo "  AgentBridge:    $AB_DIR"
   echo
@@ -409,11 +580,11 @@ main() {
   echo "    Odoo:      $INSTALL_ROOT/venv/bin/python $INSTALL_ROOT/odoo/odoo-bin -d odoo_agent --db_port $DB_PORT"
   echo "    Assistant: $INSTALL_ROOT/agentbridge/agent"
 
-  # Users reached a working stack and still did not know what to do next, so put the vendor's
-  # first steps in front of them, after the credentials above have been printed. The URL is
-  # printed too, for headless runs and for users who close the tab.
+  # The local start page, not the vendor's documentation site: a page about the machine in front of
+  # the user is what a reader who does not know what a local web application is needs first. The
+  # vendor's guide stays printed above as a link for later.
   if [ "$odoo_up" -eq 1 ] && command -v xdg-open >/dev/null 2>&1; then
-    xdg-open "https://www.odoo.com/documentation/20.0/applications.html" >/dev/null 2>&1 &
+    xdg-open "$INSTALL_ROOT/start.html" >/dev/null 2>&1 &
   fi
 }
 

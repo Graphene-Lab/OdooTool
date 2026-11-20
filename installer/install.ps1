@@ -6,16 +6,19 @@
 #   3. Installs Odoo Community and creates a database with the base modules.
 #   4. Downloads AgentBridge and installs the OdooTool plugin (activated by default).
 #   5. Configures OdooTool with the Odoo address and an API key.
-#   6. Opens the firewall port, starts Odoo, opens the Odoo 20 first-steps page in the default
-#      browser and leaves Odoo running with the assistant installed and ready to start from
-#      the icon.
+#   6. Opens the firewall port, starts Odoo, and leaves Odoo running with the assistant installed
+#      and ready to start from the icon.
 #
 # INSTALLER CONTRACT - do not change without reading INSTALLER-CONTRACT.md.
 # The "AI Odoo" launcher must start Odoo and AgentBridge (with the OdooTool plugin) in a visible
-# terminal window, and open the default browser on Odoo at http://localhost:8069. The assistant's
-# office chat at http://localhost:5290/OfficeManager is a second entrance and must NOT be opened
-# automatically: doing so hid the ERP behind a page the user had not asked for. Shared rationale:
-# AgentBridge/docs-dev/INSTALLER-CONTRACT.md.
+# terminal window, and open the default browser on the local start page: one screen that says what
+# runs on this PC, with a link to Odoo at http://localhost:8069/web/login?db=odoo_agent and the
+# credentials. The assistant is the terminal window, not a browser tab: the page does not link the
+# office chat. The bare address http://localhost:8069 is not used as the destination
+# because with the website module installed it renders the public placeholder site, which a reader
+# cannot tell apart from a demo web page. The assistant's office chat at
+# http://localhost:5290/OfficeManager is a second entrance: it is linked, not opened. Shared
+# rationale: AgentBridge/docs-dev/INSTALLER-CONTRACT.md.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
@@ -684,23 +687,39 @@ if (Test-Path $odooJsonPath) {
     try { $existingKey = (Get-Content -Raw $odooJsonPath | ConvertFrom-Json).apiKey } catch {}
 }
 $OdooApiKey = $existingKey
-if ([string]::IsNullOrWhiteSpace($existingKey)) {
-Log "Creating the Odoo API key for the admin user"
+$needKey = [string]::IsNullOrWhiteSpace($existingKey)
+# The administrator account really in the database, and whether this run set its password. The
+# summary and the start page print THESE, never the values the wizard would have used: on a re-run
+# the account keeps its own login, and printing the wizard's default there handed the user a user
+# name and a password Odoo rejected (measured 2026-11-20: the summary said admin@example.com with
+# a freshly generated password, the database held admin@riverton.example and another password).
+$AdminLogin = ''
+$AdminPassSet = $false
+Log $(if ($needKey) { "Creating the Odoo API key for the admin user" } else { "Reading the administrator account (the API key is already there)" })
 $env:ODOO_ADMIN_EMAIL = $AdminEmail
 $env:ODOO_ADMIN_PASS  = $AdminPass
+$env:ODOO_SET_PASSWORD = if (-not [string]::IsNullOrWhiteSpace($env:ADMIN_PASS)) { '1' } else { '0' }
+$env:ODOO_MAKE_KEY = if ($needKey) { '1' } else { '0' }
 $env:ODOO_COMPANY_NAME = $Company
 $env:ODOO_CURRENCY = $CurrencyCode
 $keyScript = @'
 import os
 admin = env["res.users"].browse(2)
-# Set the admin credentials only on the first install; on a re-run keep the existing ones.
+set_password = os.environ.get("ODOO_SET_PASSWORD") == "1"
+# The database step creates the administrator with the login 'admin'. That account is renamed to
+# the address the wizard asked for and given a password this run can print. On a re-run the login
+# stays as it is, and the password is rewritten only when ADMIN_PASS was given: printing a
+# password that was never applied is worse than printing none.
 if admin.login == 'admin':
     email = os.environ["ODOO_ADMIN_EMAIL"]
     admin.write({"login": email, "email": email, "password": os.environ["ODOO_ADMIN_PASS"]})
+    set_password = True
 else:
     found = env["res.users"].search([("login", "=", os.environ["ODOO_ADMIN_EMAIL"])], limit=1)
     if found:
         admin = found
+    if set_password:
+        admin.write({"password": os.environ["ODOO_ADMIN_PASS"]})
 # The company name asked in the wizard has to reach the database: without this the ERP stays
 # "My Company" and every printed document carries the installer's placeholder.
 company_name = os.environ.get("ODOO_COMPANY_NAME", "").strip()
@@ -732,9 +751,16 @@ except KeyError:
 if pricelist and pricelist.currency_id.id != company.currency_id.id:
     pricelist.write({"currency_id": company.currency_id.id,
                      "name": "Default " + company.currency_id.name})
-key = env["res.users.apikeys"].with_user(admin)._generate("rpc", "agentbridge", None)
+key = ""
+if os.environ.get("ODOO_MAKE_KEY") == "1":
+    key = env["res.users.apikeys"].with_user(admin)._generate("rpc", "agentbridge", None)
 env.cr.commit()
-print(key or "")
+# Three facts on three lines: the key (only when one was just created), the login that exists,
+# and whether the password this run knows is the one in the database. A single bare value used to
+# be read back as "the whole file is the key", which cannot carry the other two.
+print("KEY=" + (key or ""))
+print("LOGIN=" + (admin.login or ""))
+print("PASSWORD_SET=" + ("1" if set_password else "0"))
 '@
 $scriptPath = Join-Path $InstallRoot 'make_key.py'
 [System.IO.File]::WriteAllText($scriptPath, $keyScript, (New-Object System.Text.UTF8Encoding($false)))
@@ -748,34 +774,80 @@ Start-Process -FilePath $py -ArgumentList @(
     "--addons-path=$OdooDir\addons", '--no-http'
 ) -RedirectStandardInput $scriptPath -RedirectStandardOutput $outPath -RedirectStandardError $errPath `
   -NoNewWindow -Wait
-$OdooApiKey = ''
+$OdooApiKey = $existingKey
 if (Test-Path $outPath) {
-    # odoo-bin shell writes nothing (the database step failed, or Odoo was unreachable), so the
-    # redirected file can exist but be empty; Get-Content -Raw then returns $null and .Trim() used
-    # to throw "You cannot call a method on a null-valued expression". Treat empty as "no key".
-    $rawKey = Get-Content -Raw $outPath
-    if ($rawKey) { $OdooApiKey = $rawKey.Trim() }
+    # odoo-bin shell writes nothing when the database step failed, so the redirected file can
+    # exist and be empty; each fact now arrives on its own KEY=/LOGIN=/PASSWORD_SET= line, so a
+    # stray log line can no longer be taken for the key.
+    foreach ($line in @(Get-Content $outPath -ErrorAction SilentlyContinue)) {
+        if     ($line -match '^KEY=(.*)$')         { if ([string]::IsNullOrWhiteSpace($OdooApiKey)) { $OdooApiKey = $Matches[1].Trim() } }
+        elseif ($line -match '^LOGIN=(.*)$')       { $AdminLogin = $Matches[1].Trim() }
+        elseif ($line -match '^PASSWORD_SET=(\d)') { $AdminPassSet = ($Matches[1] -eq '1') }
+    }
 }
-if ([string]::IsNullOrWhiteSpace($OdooApiKey)) {
+if ($needKey -and [string]::IsNullOrWhiteSpace($OdooApiKey)) {
     Problem "Could not auto-create the API key. Create it in Odoo (Preferences -> Account Security -> New API Key) and put it in $odooJsonPath, otherwise the assistant cannot call Odoo."
-}
-} else {
-    Log "Reusing the existing Odoo API key"
 }
 
 # --- AgentBridge + OdooTool plugin --------------------------------------
 New-Item -ItemType Directory -Force -Path $AbDir | Out-Null
-if (Test-Path (Join-Path $AbDir 'agent.exe')) {
-    Log "AgentBridge already installed; skipping download"
-} else {
+# "Already installed" is not "up to date". The first version of this installer skipped the download
+# whenever agent.exe existed, so a stack installed in November kept that assistant for ever while
+# the tool, the plugin and the book moved on: the user saw a TUI that was four releases old and
+# reported it as a bug (2026-11-20). The installed tag is read from a stamp written after every
+# successful install; an installation made before the stamp existed reports the version the
+# executable carries.
+$agentExe = Join-Path $AbDir 'agent.exe'
+$stampFile = Join-Path $AbDir 'odootool-version.txt'
+$installedTag = ''
+if (Test-Path $stampFile) { $installedTag = (Get-Content -Raw $stampFile).Trim() }
+if (-not $installedTag -and (Test-Path $agentExe)) {
+    $v = (Get-Item $agentExe).VersionInfo.FileVersion
+    if ($v) { $installedTag = "v$v" }
+}
+$wantTag = $AbTag
+$rel = $null
+if ($AbTag -eq 'latest') {
+    try {
+        $rel = Invoke-RestMethod "https://api.github.com/repos/$AbRepo/releases/latest" `
+            -Headers @{ 'User-Agent' = 'OdooTool-installer' } -TimeoutSec 30
+        if ($rel.tag_name) { $wantTag = [string]$rel.tag_name }
+    } catch {
+        # No network, no rate budget, or a proxy: an install must not fail because a version check
+        # did. What is already there is kept, and a fresh install falls back to the latest URL.
+        Warn "could not ask GitHub which AgentBridge release is current; keeping what is installed"
+    }
+}
+$needAgentBridge = -not (Test-Path $agentExe)
+if (-not $needAgentBridge) {
+    if ($wantTag -and $installedTag -and ($wantTag -ne $installedTag)) {
+        Log "AgentBridge $installedTag is installed and $wantTag is current: updating"
+        # A running assistant holds agent.exe open, so it is stopped before the archive is unpacked.
+        Get-Process agent -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -and ($_.Path -like "$AbDir\*") } |
+            ForEach-Object { try { Stop-Process -Id $_.Id -Force -ErrorAction Stop } catch { } }
+        Start-Sleep -Seconds 2
+        $needAgentBridge = $true
+    } elseif ($installedTag) {
+        Log "AgentBridge $installedTag is up to date"
+    } else {
+        Log "AgentBridge is installed (version unknown); keeping it"
+    }
+}
+if ($needAgentBridge) {
 Log "Downloading AgentBridge"
 $asset = 'agentbridge-win-x64.tar.gz'
-if ($AbTag -eq 'latest') {
-    $url = "https://github.com/$AbRepo/releases/latest/download/$asset"
+if ($wantTag -and $wantTag -ne 'latest') {
+    $url = "https://github.com/$AbRepo/releases/download/$wantTag/$asset"
 } else {
-    $url = "https://github.com/$AbRepo/releases/download/$AbTag/$asset"
+    $url = "https://github.com/$AbRepo/releases/latest/download/$asset"
 }
-$pkg = Join-Path $AbDir $asset
+# The file name carries the tag, so a partial transfer left by an earlier run can only ever be
+# resumed for the release it belongs to: appending a new version to an old prefix produces an
+# archive the extractor rejects minutes later. Same rule as the PostgreSQL download.
+$tagForFile = if ($wantTag) { $wantTag } else { 'latest' }
+$pkg = Join-Path $AbDir ([IO.Path]::GetFileNameWithoutExtension($asset) + "-$tagForFile.tar.gz")
+Remove-Item (Join-Path $AbDir $asset) -Force -ErrorAction SilentlyContinue
 # curl.exe (built into Windows 10+) resumes a partial transfer and retries transient
 # failures. BITS stalled here with no progress, so curl is the reliable path.
 $curl = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
@@ -826,6 +898,10 @@ if (-not (Test-Path (Join-Path $AbDir 'agent.exe'))) { throw "AgentBridge binary
 # The archive is 1.4 GB and is never needed again: keeping it doubled the footprint of the
 # install and is what turned a full disk into a broken Windows shell on 2026-11-14.
 Remove-Item $pkg -Force -ErrorAction SilentlyContinue
+# The stamp is what a later run compares against: without it, "already installed" is the only
+# thing the installer can say, and a stack is frozen at the release it was born with.
+$stamp = if ($wantTag -and $wantTag -ne 'latest') { $wantTag } else { '' }
+if ($stamp) { [System.IO.File]::WriteAllText($stampFile, $stamp, (New-Object System.Text.UTF8Encoding($false))) }
 }
 
 # --- OdooTool plugin: AgentBridge loads plugins from Tools/ next to the exe ---
@@ -936,10 +1012,15 @@ if (-not $up) { Problem "Odoo did not answer on port $OdooPort after 60s; check 
 
 # --- One-click launcher + shortcut -------------------------------------
 # Launcher contract: start Odoo, start AgentBridge as a VISIBLE terminal window (the TUI is the
-# product; a process started without a console shows nothing), and open the default browser on
-# Odoo itself. The office chat on 5290 is a second entrance, not the destination: opening it on
-# start-up hid the ERP behind a page the user had not asked for.
-Log "Creating the one-click launcher and shortcuts"
+# product; a process started without a console shows nothing), and open the local start page in
+# the default browser. The start page is what the icon promises: one screen that says what is
+# running on this PC, with the door into the ERP and the credentials. The assistant chat is NOT
+# linked: the assistant is the terminal window, and offering the browser office on the first screen
+# reintroduces exactly the confusion the contract removes (reported 2026-11-20).
+# It replaced a bare http://localhost:8069 because that address is ambiguous: with the website
+# module installed it renders the public placeholder site, whose only way in is a small "Sign in"
+# link, and a reader who lands there has no way to tell it is their own ERP (reported 2026-11-20).
+Log "Creating the one-click launcher, the start page and the shortcuts"
 $launcherTemplate = @'
 $ErrorActionPreference = 'Continue'
 $root = $PSScriptRoot
@@ -967,16 +1048,106 @@ if (-not $abUp -and (Test-Path $ab)) {
     Start-Process -FilePath 'conhost.exe' -ArgumentList $ab, '--no-update' `
         -WorkingDirectory (Join-Path $root 'agentbridge') -WindowStyle Normal
 }
-# Odoo in the default browser, once it answers: the ERP is what the icon promises.
+# The start page in the default browser, once Odoo answers. It explains what is running and holds
+# the link and the account, so a user who has never seen a web application served from their own machine is
+# not left in front of a page they cannot interpret.
 for ($i = 0; $i -lt 30; $i++) { if (Test-Odoo) { break }; Start-Sleep -Seconds 2 }
-if (Test-Odoo) { Start-Process "http://localhost:$port" }
-else { Write-Host "Odoo did not answer on port $port; see $root\odoo.log" }
+$startPage = Join-Path $root 'start.html'
+if (-not (Test-Odoo)) { Write-Host "Odoo did not answer on port $port; see $root\odoo.log" }
+elseif (Test-Path $startPage) { Start-Process $startPage }
+else { Start-Process "http://localhost:$port/web/login?db=odoo_agent" }
 '@
 $launcherPath = Join-Path $InstallRoot 'start.ps1'
 # Put the real role name and password in, quoted so nothing can break or be injected when they
 # contain $ ` " ' or spaces (a custom DB_USER / DB_PASSWORD used to break the shortcut).
 $launcherText = $launcherTemplate.Replace('__DB_PORT__', [string]$DbPort).Replace('__DB_USER__', (PsSingleQuote $DbUser)).Replace('__DB_PASS__', (PsSingleQuote $DbPassword))
 [System.IO.File]::WriteAllText($launcherPath, $launcherText, (New-Object System.Text.UTF8Encoding($false)))
+
+# --- Start page --------------------------------------------------------
+# A local HTML file, not a web service: it needs no process, works offline, and is regenerated on
+# every run so the credentials on it are the ones that work. Opened from the icon and at the end
+# of the installation.
+function HtmlEscape([string]$s) {
+    if ($null -eq $s) { return '' }
+    return $s.Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;').Replace('"', '&quot;')
+}
+$erpUrl = "http://localhost:$OdooPort/web/login?db=odoo_agent"
+if ($AdminLogin) {
+    $loginHtml = '<code>' + (HtmlEscape $AdminLogin) + '</code>'
+    $passHtml = if ($AdminPassSet) { '<code>' + (HtmlEscape $AdminPass) + '</code>' }
+                else { 'unchanged since the first installation (set ADMIN_PASS before running the installer to change it)' }
+} else {
+    $loginHtml = 'not configured by this run: read the problems printed above'
+    $passHtml = 'not configured by this run'
+}
+$startTemplate = @'
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>AI Odoo - start page</title>
+<style>
+  body { margin:0; font:16px/1.55 "Segoe UI", system-ui, sans-serif; color:#1b1b1b; background:#f4f4f6; }
+  main { max-width:780px; margin:0 auto; padding:40px 24px 56px; }
+  h1 { font-size:28px; margin:0 0 10px; }
+  h2 { font-size:18px; margin:34px 0 10px; }
+  .lede { font-size:17px; color:#3c3c46; margin:0 0 26px; }
+  .doors { display:grid; gap:16px; grid-template-columns:1fr; }
+  a.door { display:block; text-decoration:none; color:inherit; background:#fff; border:1px solid #dcdce4;
+           border-radius:10px; padding:18px 20px; }
+  a.door:hover { border-color:#875A7B; }
+  .t { font-weight:600; font-size:18px; color:#714B67; }
+  .d { color:#4a4a55; font-size:15px; margin-top:6px; }
+  .addr { font-family:Consolas, monospace; font-size:13px; color:#6b6b76; margin-top:10px; }
+  .card { background:#fff; border:1px solid #dcdce4; border-radius:10px; padding:14px 20px; }
+  table { border-collapse:collapse; }
+  td { padding:3px 18px 3px 0; vertical-align:top; }
+  td.k { color:#6b6b76; white-space:nowrap; }
+  code { font-family:Consolas, monospace; background:#f0f0f4; padding:1px 5px; border-radius:4px; }
+  ul { margin:6px 0 0; padding-left:20px; }
+  li { margin:5px 0; }
+  footer { margin-top:34px; color:#6b6b76; font-size:13px; }
+</style>
+<main>
+  <h1>AI Odoo is running on this computer</h1>
+  <p class="lede">Odoo is a <strong>web application</strong>: the program runs here, on this PC, and
+  the browser is its screen. The address <code>localhost</code> means <em>this computer</em>.
+  Nothing on this page goes through the internet.</p>
+
+  <div class="doors">
+    <a class="door" href="__ERP_URL__">
+      <div class="t">Open Odoo &rarr;</div>
+      <div class="d">The ERP: customers, products, orders, invoices, stock. Log in with the account below.</div>
+      <div class="addr">http://localhost:__ODOO_PORT__</div>
+    </a>
+  </div>
+
+  <h2>The account</h2>
+  <div class="card"><table>
+    <tr><td class="k">Login</td><td>__LOGIN__</td></tr>
+    <tr><td class="k">Password</td><td>__PASS__</td></tr>
+  </table></div>
+
+  <h2>The black window is the assistant</h2>
+  <div class="card"><p style="margin:0">Double-clicking the <strong>AI Odoo</strong> icon also opens a
+  black window: <strong>that is the assistant</strong>, and it is where you talk to it. Type there,
+  for example <em>list the customers</em>, and it does the work in Odoo, in the browser. Leave it
+  open while you work: closing it stops the assistant.</p></div>
+
+  <h2>If a page does not open</h2>
+  <div class="card"><ul>
+    <li>Double-click the <strong>AI Odoo</strong> icon again: it starts whatever is not running.</li>
+    <li>If Odoo still does not answer, the file <code>odoo.log</code> in <code>__ROOT__</code> says why.</li>
+    <li>Odoo's own user guide: <a href="https://www.odoo.com/documentation/20.0/applications.html">odoo.com/documentation/20.0</a>.</li>
+  </ul></div>
+
+  <footer>This page is generated by the OdooTool installer. It lives on this computer, in __ROOT__.</footer>
+</main>
+</html>
+'@
+$startText = $startTemplate.Replace('__ERP_URL__', $erpUrl).Replace('__ODOO_PORT__', $OdooPort).
+    Replace('__LOGIN__', $loginHtml).Replace('__PASS__', $passHtml).
+    Replace('__ROOT__', (HtmlEscape $InstallRoot))
+[System.IO.File]::WriteAllText((Join-Path $InstallRoot 'start.html'), $startText, (New-Object System.Text.UTF8Encoding($false)))
 
 $ws = New-Object -ComObject WScript.Shell
 $desktop = [Environment]::GetFolderPath('Desktop')
@@ -1008,14 +1179,23 @@ if ($Problems.Count -gt 0) {
 }
 Write-Host "  HOW TO START:"
 Write-Host "    Double-click the 'AI Odoo' icon on the Desktop (or in the Start Menu)."
-Write-Host "    It opens the assistant in the browser: that is where you talk to it."
-Write-Host "    Type a request there such as 'list the customers'."
+Write-Host "    A page opens in the browser: it says what is running here, with the account and the link."
+Write-Host "      'Open Odoo'  the ERP, where the data is. Log in with the account below."
+Write-Host "    A black window also opens: that is the assistant. Type there, for example"
+Write-Host "    'list the customers', and leave it open while you work."
 Write-Host "    The database and the admin user are already created: do not run the Odoo database manager."
 Write-Host "    If it appears, the install did not complete: run install.bat again."
-Write-Host "    Odoo 20 first steps: https://www.odoo.com/documentation/20.0/applications.html"
+Write-Host "    Odoo 20 user guide: https://www.odoo.com/documentation/20.0/applications.html"
 Write-Host ''
+Write-Host "  Odoo (the ERP, in the browser):  http://localhost:$OdooPort"
+if ($AdminLogin) {
+    Write-Host "  Login: $AdminLogin"
+    if ($AdminPassSet) { Write-Host "  Password: $AdminPass" }
+    else { Write-Host "  Password: unchanged since the first installation (set ADMIN_PASS to change it)" }
+} else {
+    Write-Host "  Login:    not configured by this run - read the problems listed above"
+}
 Write-Host "  Assistant (talk to it here):  http://localhost:5290/OfficeManager"
-Write-Host "  Odoo (the data behind it):    http://localhost:$OdooPort   login $AdminEmail / $AdminPass"
 Write-Host "  PostgreSQL:     superuser '$PgSuper' password '$PgSuperPass' on port $DbPort (set by this installer)"
 Write-Host "  Install root:   $InstallRoot"
 Write-Host "  AgentBridge:    $AbDir"
@@ -1025,14 +1205,17 @@ Write-Host "  Manual start, if you ever need it:"
 Write-Host "    Odoo:      $py `"$OdooDir\odoo-bin`" -d odoo_agent --db_port $DbPort"
 Write-Host "    Assistant: $AbDir\agent.exe"
 
-# Users reached a working stack and still did not know what to do next, so put the vendor's
-# first steps in front of them, after the credentials above have been printed. The URL is
-# printed too, for headless runs and for users who close the tab.
+# A reader who reached a working stack and did not know what to do next used to be sent to the
+# vendor's documentation site, which is a page about the product, not about the machine in front of
+# them: the installer's own report shows the tab that opened, odoo.com in the browser's language,
+# and the reader closing it and concluding that nothing had been installed (2026-11-20). The local
+# start page says what is running here and where the two doors are, and the vendor's guide stays
+# printed above as a link for later.
 if ($Problems.Count -eq 0) {
     try {
-        Start-Process 'https://www.odoo.com/documentation/20.0/applications.html'
-        Write-Host "    (Opened the Odoo 20 first-steps page in your default browser.)"
+        Start-Process (Join-Path $InstallRoot 'start.html')
+        Write-Host "    (Opened the start page in your default browser.)"
     } catch {
-        Write-Host "    (Could not open the browser - use the URL above.)" -ForegroundColor Yellow
+        Write-Host "    (Could not open the browser - open $InstallRoot\start.html yourself.)" -ForegroundColor Yellow
     }
 }

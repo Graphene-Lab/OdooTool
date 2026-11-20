@@ -86,11 +86,19 @@ enables the OdooTool plugin, writes the Odoo address and an API key into the plu
 and starts Odoo.
 
 When it finishes, double-click the **AI Odoo** icon (Desktop or application menu). It starts
-Odoo, opens the Odoo page at `http://localhost:8069` in your browser, and opens the assistant in
-its own terminal window: that terminal is where you type. Ask something like *"list the
-customers"*: it uses OdooTool to read — and, when you ask for it, change — the data in Odoo, and
-the result appears in the Odoo page next to it. The installer prints the generated admin login
-and password at the end: they are created locally, not registered anywhere.
+Odoo, opens the **start page** in your browser, and opens the assistant in its own terminal
+window. The start page is a small file on your own disk: it says what is running on this
+computer, shows the admin account, and has one link — *Open Odoo*, the ERP, at
+`http://localhost:8069/web/login?db=odoo_agent`. Ask something like
+*"list the customers"* in the terminal: it uses OdooTool to read — and, when you ask for it,
+change — the data in Odoo, and the result appears in the Odoo page next to it. The installer prints
+the generated admin login and password at the end: they are created locally, not registered
+anywhere.
+
+Odoo is a **web application**: the program and its database run on this PC, `localhost` means
+*this computer*, and the browser is its screen. There is no website to sign up to and nothing is
+sent anywhere. If the page does not open, the program is not running — double-click the icon
+again; the file `odoo.log` in the installation folder says why.
 
 The same assistant also has a browser chat at `http://localhost:5290/OfficeManager`, a small
 office where every little person is one AI agent. They pace
@@ -119,6 +127,22 @@ For a fully unattended run, set these environment variables before starting:
 `INSTALL_NEED_GB` (free space required before anything is downloaded, default 12) and
 `ODOO_API_KEY` (Linux, to reuse an existing key).
 iOS is not supported: Odoo and AgentBridge do not run on iOS.
+
+### Uninstall
+
+`uninstall.bat` (Windows) and `uninstall.sh` (Linux) undo the installation: they stop the ERP and
+the assistant, **drop the Odoo database**, remove the installation folder, the **AI Odoo**
+shortcuts and the firewall rule.
+
+The deletion is guarded twice. A yes/no question lists what disappears; then the uninstaller asks
+for the phrase **DESTROY ALL**, typed in capital letters. Anything else stops it before a single
+file or row is touched. There is no undo and the uninstaller makes no backup, so take a copy of the
+database first if it holds anything you want back.
+
+AgentBridge is asked about separately: answering *no* keeps it (and its settings and API keys) and
+removes only the Odoo half. PostgreSQL is left installed, because it is a service other programs may
+share; remove it from *Apps & features* when nothing else needs it. For unattended use, set
+`UNINSTALL_CONFIRM="DESTROY ALL"` (and `UNINSTALL_REMOVE_AGENTBRIDGE=1` to remove AgentBridge too).
 
 ## What you need
 
@@ -219,16 +243,23 @@ method for the LLM with a snake_case name.
 
 The installer's **AI Odoo** icon is a deliberate design decision: it must start **both** Odoo and
 AgentBridge with the OdooTool plugin already active, give the assistant a **visible terminal**,
-and open the **Odoo page** at `http://localhost:8069`. The assistant's browser chat at
-`http://localhost:5290/OfficeManager` is a second entrance: it is available, but the launcher does
-not open it, because doing so hid the ERP behind a page the user had not asked for. The chat is
-served by AgentBridge and in the standard installation drives one agent.
-The reason is the single-agent, privacy-first local deployment: on a local GPU, parallel agents
-share the same VRAM instead of adding compute.
+and open the **local start page** (`start.html`) in the browser. The start page links to the ERP at
+`/web/login?db=odoo_agent` and shows the account. The assistant is the terminal window: the office
+chat at `http://localhost:5290/OfficeManager` is not linked from the start page and is never opened
+on start-up, because offering a browser chat as the way to drive Odoo hid the ERP and split the
+product in two. The bare `http://localhost:8069` is not the destination:
+with the `website` module installed it serves the public site, which is how a reader ended up on a
+page with a placeholder logo and concluded the installation had failed (2026-11-20). The chat is
+served by AgentBridge and in the standard installation drives one agent. The reason is the
+single-agent, privacy-first local deployment: on a local GPU, parallel agents share the same VRAM
+instead of adding compute.
 
-At the end of a successful installation the installer opens the Odoo 20 first-steps page in
-the default browser (and prints the URL), so a new user is not left in front of a working
-stack without knowing what to do next.
+At the end of a successful installation the installer writes and opens the start page, so a new
+user is not left in front of a working stack without knowing what to do next; the vendor's user
+guide is printed as a link for later.
+
+`uninstall.bat` / `uninstall.sh` remove the same pieces and require the typed phrase
+**DESTROY ALL** before anything is deleted.
 
 Before changing anything in `installer/`, read **[INSTALLER-CONTRACT.md](INSTALLER-CONTRACT.md)**.
 The shared decision record and rationale are in
